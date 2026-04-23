@@ -7,6 +7,7 @@ import { lineEach } from '../render/image-ops';
 import { makeTileWord, TILE_FLIP_D, TILE_FLIP_X, TILE_FLIP_Y, type Sprite } from '../model/types';
 import type { PixelPatch } from '../store/history';
 import { TextDialog } from './TextDialog';
+import { usePrefsStore } from '../prefs/prefs-store';
 
 // Build a tinted ghost canvas for a frame (used by onion skin).
 function buildOnionCanvas(sprite: Sprite, frame: number, tint: string): HTMLCanvasElement {
@@ -87,6 +88,8 @@ export function Viewport() {
   const onionSkinPrev = useEditorStore((s) => s.onionSkinPrev);
   const onionSkinNext = useEditorStore((s) => s.onionSkinNext);
   const onionSkinOpacity = useEditorStore((s) => s.onionSkinOpacity);
+  const checkerSize = usePrefsStore((s) => s.checkerSize);
+  const showPixelGrid = usePrefsStore((s) => s.showGrid);
   const setCursor = useEditorStore((s) => s.setCursor);
   const zoomBy = useEditorStore((s) => s.zoomBy);
   const setPan = useEditorStore((s) => s.setPan);
@@ -116,7 +119,7 @@ export function Viewport() {
     draw();
   }, [sprite, frame, dirtyTick, mode, selectedTile, currentLayerId]);
 
-  useEffect(() => { draw(); }, [viewport, cursor, brushFlipFlags, selectedTile, tiledMode, showTileNumbers, onionSkinEnabled, onionSkinPrev, onionSkinNext, onionSkinOpacity, selection]);
+  useEffect(() => { draw(); }, [viewport, cursor, brushFlipFlags, selectedTile, tiledMode, showTileNumbers, onionSkinEnabled, onionSkinPrev, onionSkinNext, onionSkinOpacity, selection, checkerSize, showPixelGrid]);
 
   // Marching-ants animation: run while a selection exists.
   useEffect(() => {
@@ -165,7 +168,7 @@ export function Viewport() {
     ctx.imageSmoothingEnabled = false;
     const { zoom, panX, panY } = viewport;
     const dw = w * zoom, dh = h * zoom;
-    drawCheckerboard(ctx, panX, panY, dw, dh);
+    drawCheckerboard(ctx, panX, panY, dw, dh, checkerSize);
 
     // Onion skin — draw ghost copies of neighbouring frames UNDER the current frame.
     if (onionSkinEnabled && mode !== 'tile' && sprite.frames.length > 1) {
@@ -212,7 +215,7 @@ export function Viewport() {
     ctx.strokeRect(panX - 0.5, panY - 0.5, dw + 1, dh + 1);
 
     // Grid (pixel-level).
-    if (zoom >= 12 && mode !== 'tilemap') {
+    if (showPixelGrid && zoom >= 12 && mode !== 'tilemap') {
       ctx.strokeStyle = 'rgba(255,255,255,0.05)';
       ctx.beginPath();
       for (let x = 0; x <= w; x++) {

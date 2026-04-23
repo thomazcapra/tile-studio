@@ -43,6 +43,12 @@ test.describe('P11a persistence', () => {
 
   test('Autosave round-trip: serialize → IDB → deserialize preserves pixel', async ({ page }) => {
     await page.goto('/');
+    // Autosave interval is configurable via prefs — force a short window for this test
+    // BEFORE the dirty edit so the new subscription is active by the time we signal.
+    await page.evaluate(() => {
+      (globalThis as any).__tileStudio.prefs.getState().setAutosaveInterval(2);
+    });
+    await page.waitForTimeout(50);
     const pixel = 0xffabcdef;
     await page.evaluate((p) => {
       const s = (globalThis as any).__tileStudio.store.getState();
@@ -50,8 +56,8 @@ test.describe('P11a persistence', () => {
       s.markDirty();
     }, pixel);
 
-    // Wait longer than the autosave debounce (1000ms).
-    await page.waitForTimeout(1300);
+    // Wait longer than the autosave debounce.
+    await page.waitForTimeout(2500);
 
     // Read back from IndexedDB via the exposed autosave helpers.
     const restoredPixel = await page.evaluate(async () => {

@@ -1,7 +1,27 @@
 {
   "name": "tile-studio",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "description": "Browser-based pixel-art and tilemap editor inspired by Aseprite",
+  "license": "MIT",
+  "author": "Thomaz Capra",
+  "homepage": "https://asprite-805f9.web.app",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/thomazcapra/tile-studio.git"
+  },
+  "bugs": {
+    "url": "https://github.com/thomazcapra/tile-studio/issues"
+  },
+  "keywords": [
+    "pixel-art",
+    "tilemap",
+    "sprite-editor",
+    "aseprite",
+    "gamedev",
+    "tileset",
+    "animation"
+  ],
   "type": "module",
   "scripts": {
     "dev": "vite",

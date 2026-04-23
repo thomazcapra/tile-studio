@@ -27,6 +27,72 @@ test.describe('P18 preferences + shortcut editor', () => {
     expect(after).toBe(!initial);
   });
 
+  test('Disabling autosave prevents background project writes', async ({ page }) => {
+    await page.goto('/');
+    const size = await page.evaluate(async () => {
+      const autosave = await import('/src/io/autosave.ts');
+      const mod = (globalThis as any).__tileStudio;
+      await autosave.clearAutosave();
+      mod.prefs.getState().setAutosaveEnabled(false);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const img = mod.store.getState().activeImage();
+      img.data[0] = 0xff00ff00;
+      mod.store.getState().markDirty();
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+      const bytes = await autosave.getAutosave();
+      return bytes?.length ?? 0;
+    });
+    expect(size).toBe(0);
+  });
+
+  test('Pixel grid preference toggles high-zoom grid rendering', async ({ page }) => {
+    await page.goto('/');
+    await page.evaluate(() => {
+      const g = globalThis as any;
+      const proto = CanvasRenderingContext2D.prototype as CanvasRenderingContext2D & {
+        __tileStudioOrigStroke?: typeof CanvasRenderingContext2D.prototype.stroke;
+      };
+      if (!proto.__tileStudioOrigStroke) {
+        proto.__tileStudioOrigStroke = proto.stroke;
+        proto.stroke = function (...args: Parameters<typeof proto.stroke>) {
+          g.__tileStudioStrokeCount = (g.__tileStudioStrokeCount ?? 0) + 1;
+          return proto.__tileStudioOrigStroke!.apply(this, args);
+        };
+      }
+      g.__tileStudioStrokeCount = 0;
+    });
+
+    await page.evaluate(() => {
+      const mod = (globalThis as any).__tileStudio;
+      mod.prefs.getState().setShowGrid(false);
+      mod.store.getState().setZoom(16);
+    });
+    await page.waitForTimeout(50);
+    const withoutGrid = await page.evaluate(() => {
+      const g = globalThis as any;
+      const count = g.__tileStudioStrokeCount ?? 0;
+      g.__tileStudioStrokeCount = 0;
+      (g as any).__tileStudio.prefs.getState().setShowGrid(true);
+      return count;
+    });
+    await page.waitForTimeout(50);
+    const withGrid = await page.evaluate(() => {
+      const g = globalThis as any;
+      const count = g.__tileStudioStrokeCount ?? 0;
+      const proto = CanvasRenderingContext2D.prototype as CanvasRenderingContext2D & {
+        __tileStudioOrigStroke?: typeof CanvasRenderingContext2D.prototype.stroke;
+      };
+      if (proto.__tileStudioOrigStroke) {
+        proto.stroke = proto.__tileStudioOrigStroke;
+        delete proto.__tileStudioOrigStroke;
+      }
+      delete g.__tileStudioStrokeCount;
+      return count;
+    });
+
+    expect(withGrid).toBeGreaterThan(withoutGrid);
+  });
+
   test('Shortcut editor surfaces the action catalog', async ({ page }) => {
     await page.goto('/');
     await page.getByTestId('menu-edit').click();
