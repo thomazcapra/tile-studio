@@ -15,6 +15,7 @@ import * as nativeIO from './io/native';
 import { usePrefsStore } from './prefs/prefs-store';
 import { SHORTCUT_ACTIONS, keyEventToShortcut, DEFAULT_SHORTCUTS } from './prefs/shortcuts';
 import { autoTileGrid, CANONICAL_WANG_16 } from './tileset/autotile';
+import { WIKI_PAGES } from './wiki/content';
 
 if (import.meta.env.DEV) {
   // Exposed for E2E tests + ad-hoc debugging. Never rely on this at runtime.
@@ -32,6 +33,7 @@ if (import.meta.env.DEV) {
     nativeIO,
     shortcuts: { SHORTCUT_ACTIONS, keyEventToShortcut, DEFAULT_SHORTCUTS },
     autotile: { autoTileGrid, CANONICAL_WANG_16 },
+    wiki: { pages: WIKI_PAGES.map((page) => ({ slug: page.slug, title: page.title })) },
   };
 }
 

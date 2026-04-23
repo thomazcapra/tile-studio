@@ -20,6 +20,9 @@ playwright/.cache
 # Firebase
 .firebase
 
+# Claude Code user-local settings
+.claude/settings.local.json
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

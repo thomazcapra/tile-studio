@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { CSSProperties, MouseEvent as ReactMouseEvent } from 'react';
 import { Eye, EyeOff, Lock, Unlock, Plus, Image as ImageIcon, Grid3x3, Sparkles, Copy, Trash2, ChevronUp, ChevronDown, Merge, Settings2, Folder, FolderOpen, FolderInput, FolderOutput } from 'lucide-react';
 import clsx from 'clsx';
 import { useEditorStore } from '../store/editor';
@@ -13,7 +14,10 @@ const EMPTY_SLICES: Slice[] = [];
 
 export function SidePanel() {
   return (
-    <aside className="w-64 shrink-0 border-l border-border bg-panel flex flex-col min-h-0" data-testid="side-panel">
+    <aside
+      className="w-64 shrink-0 border-l border-border bg-panel flex flex-col min-h-0 overflow-y-auto overflow-x-hidden scrollbar-slim"
+      data-testid="side-panel"
+    >
       <ColorsSection />
       <PaletteSection />
       <TilesetsPanel />
@@ -24,6 +28,111 @@ export function SidePanel() {
   );
 }
 
+function loadStoredHeight(storageKey: string | undefined, fallback: number): number {
+  if (!storageKey || typeof localStorage === 'undefined') return fallback;
+  const raw = localStorage.getItem(storageKey);
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function useResizableHeight(defaultHeight: number, storageKey?: string, minHeight = 60) {
+  const [height, setHeight] = useState<number>(() => loadStoredHeight(storageKey, defaultHeight));
+  const draggingRef = useRef(false);
+  const startY = useRef(0);
+  const startH = useRef(0);
+  const [dragging, setDragging] = useState(false);
+
+  const onMouseDown = useCallback((e: ReactMouseEvent) => {
+    e.preventDefault();
+    draggingRef.current = true;
+    startY.current = e.clientY;
+    startH.current = height;
+    setDragging(true);
+    document.body.classList.add('section-resizing');
+  }, [height]);
+
+  useEffect(() => {
+    function onMove(ev: MouseEvent) {
+      if (!draggingRef.current) return;
+      const delta = ev.clientY - startY.current;
+      const next = Math.max(minHeight, startH.current + delta);
+      setHeight(next);
+    }
+    function onUp() {
+      if (!draggingRef.current) return;
+      draggingRef.current = false;
+      setDragging(false);
+      document.body.classList.remove('section-resizing');
+      if (storageKey && typeof localStorage !== 'undefined') {
+        try { localStorage.setItem(storageKey, String(Math.round(height))); } catch { /* ignore quota */ }
+      }
+    }
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, [height, minHeight, storageKey]);
+
+  return { height, dragging, onMouseDown };
+}
+
+export interface SectionProps {
+  title: string;
+  right?: React.ReactNode;
+  children: React.ReactNode;
+  /** When true the section has a fixed, user-resizable height. */
+  resizable?: boolean;
+  /** Initial height in pixels when resizable. */
+  defaultHeight?: number;
+  /** localStorage key that persists the user-chosen height. */
+  storageKey?: string;
+  /** Minimum height while dragging. */
+  minHeight?: number;
+  testId?: string;
+}
+
+export function Section({
+  title,
+  right,
+  children,
+  resizable = false,
+  defaultHeight = 180,
+  storageKey,
+  minHeight = 60,
+  testId,
+}: SectionProps) {
+  const { height, dragging, onMouseDown } = useResizableHeight(defaultHeight, storageKey, minHeight);
+  const style: CSSProperties | undefined = resizable
+    ? { flex: `0 0 ${height}px`, height, maxHeight: height }
+    : undefined;
+  return (
+    <div
+      className="border-b border-border flex flex-col min-h-0 overflow-hidden"
+      style={style}
+      data-testid={testId}
+    >
+      <div className="px-2.5 h-7 flex items-center gap-2 text-[10px] uppercase tracking-wider text-ink/60 bg-panel2 shrink-0">
+        <span>{title}</span>
+        <span className="flex-1" />
+        {right}
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto scrollbar-slim">{children}</div>
+      {resizable && (
+        <div
+          className={clsx('section-resizer', dragging && 'is-dragging')}
+          onMouseDown={onMouseDown}
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label={`Resize ${title} section`}
+        />
+      )}
+    </div>
+  );
+}
+
 function SlicesSection() {
   const slices = useEditorStore((s) => s.sprite.slices ?? EMPTY_SLICES);
   const selected = useEditorStore((s) => s.selectedSliceId);
@@ -31,7 +140,13 @@ function SlicesSection() {
   const renameSlice = useEditorStore((s) => s.renameSlice);
   const deleteSlice = useEditorStore((s) => s.deleteSlice);
   return (
-    <Section title={`Slices (${slices.length})`}>
+    <Section
+      title={`Slices (${slices.length})`}
+      resizable
+      defaultHeight={110}
+      minHeight={60}
+      storageKey="tilestudio:sidepanel:slices-height"
+    >
       {slices.length === 0 && (
         <p className="text-[11px] text-ink/50 px-2.5 py-2">
           Pick the slice tool (S) and drag a rectangle to create a slice.
@@ -73,19 +188,6 @@ function SlicesSection() {
   );
 }
 
-function Section({ title, right, children }: { title: string; right?: React.ReactNode; children: React.ReactNode }) {
-  return (
-    <div className="border-b border-border flex flex-col min-h-0">
-      <div className="px-2.5 h-7 flex items-center gap-2 text-[10px] uppercase tracking-wider text-ink/60 bg-panel2">
-        <span>{title}</span>
-        <span className="flex-1" />
-        {right}
-      </div>
-      <div className="min-h-0 overflow-auto">{children}</div>
-    </div>
-  );
-}
-
 function ColorsSection() {
   const primary = useEditorStore((s) => s.primary);
   const secondary = useEditorStore((s) => s.secondary);
@@ -96,7 +198,13 @@ function ColorsSection() {
   const val = picker === 'secondary' ? secondary : primary;
   const setVal = picker === 'secondary' ? setSecondary : setPrimary;
   return (
-    <Section title="Color">
+    <Section
+      title="Color"
+      resizable
+      defaultHeight={88}
+      minHeight={60}
+      storageKey="tilestudio:sidepanel:color-height"
+    >
       <div className="flex items-center gap-3 p-2.5">
         <button
           data-testid="primary-swatch"
@@ -129,6 +237,10 @@ function PaletteSection() {
     <>
       <Section
         title={`Palette (${palette.colors.length})`}
+        resizable
+        defaultHeight={140}
+        minHeight={60}
+        storageKey="tilestudio:sidepanel:palette-height"
         right={
           <div className="flex items-center gap-1">
             <button
@@ -195,6 +307,10 @@ function LayersSection() {
     <>
       <Section
         title="Layers"
+        resizable
+        defaultHeight={180}
+        minHeight={80}
+        storageKey="tilestudio:sidepanel:layers-height"
         right={
           <div className="relative flex items-center gap-1">
             <button
@@ -422,7 +538,13 @@ function HistorySection() {
   const total = undoStack.length + redoStack.length;
   const cursor = undoStack.length;
   return (
-    <Section title={`History (${cursor}/${total})`}>
+    <Section
+      title={`History (${cursor}/${total})`}
+      resizable
+      defaultHeight={120}
+      minHeight={60}
+      storageKey="tilestudio:sidepanel:history-height"
+    >
       <ul className="text-[11px] font-mono text-ink/80" data-testid="history-list">
         {cursor === 0 && <li className="px-2 py-2 text-ink/40">No edits yet</li>}
         {undoStack.map((p, i) => (

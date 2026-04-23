@@ -173,19 +173,43 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
   return (
     <Dialog open={open} onClose={running ? () => {} : onClose} title="Export">
       <div className="flex gap-1 flex-wrap text-[11px]">
-        <KindTab active={kind === 'tileset'} onClick={() => setKind('tileset')} disabled={tilesets.length === 0} testId="kind-tileset">
+        <KindTab
+          active={kind === 'tileset'}
+          onClick={() => setKind('tileset')}
+          disabled={tilesets.length === 0}
+          title={tilesets.length === 0 ? 'Create a tileset first' : undefined}
+          testId="kind-tileset"
+        >
           Tileset + map
         </KindTab>
         <KindTab active={kind === 'sprite'} onClick={() => setKind('sprite')} testId="kind-sprite">
           Flat image
         </KindTab>
-        <KindTab active={kind === 'sequence'} onClick={() => setKind('sequence')} disabled={!multiFrame} testId="kind-sequence">
+        <KindTab
+          active={kind === 'sequence'}
+          onClick={() => setKind('sequence')}
+          disabled={!multiFrame}
+          title={!multiFrame ? 'Add a second frame to enable frame sequence export' : undefined}
+          testId="kind-sequence"
+        >
           Frame sequence
         </KindTab>
-        <KindTab active={kind === 'sheet'} onClick={() => setKind('sheet')} testId="kind-sheet" disabled={!multiFrame}>
+        <KindTab
+          active={kind === 'sheet'}
+          onClick={() => setKind('sheet')}
+          testId="kind-sheet"
+          disabled={!multiFrame}
+          title={!multiFrame ? 'Add a second frame to enable sprite-sheet export' : undefined}
+        >
           Sprite sheet
         </KindTab>
-        <KindTab active={kind === 'gif'} onClick={() => setKind('gif')} disabled={!multiFrame} testId="kind-gif">
+        <KindTab
+          active={kind === 'gif'}
+          onClick={() => setKind('gif')}
+          disabled={!multiFrame}
+          title={!multiFrame ? 'Add a second frame to enable animated GIF export' : undefined}
+          testId="kind-gif"
+        >
           Animated GIF
         </KindTab>
       </div>
@@ -329,13 +353,21 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
   );
 }
 
-function KindTab({ active, onClick, disabled, testId, children }: { active: boolean; onClick: () => void; disabled?: boolean; testId?: string; children: React.ReactNode }) {
+function KindTab({ active, onClick, disabled, testId, title, children }: { active: boolean; onClick: () => void; disabled?: boolean; testId?: string; title?: string; children: React.ReactNode }) {
   return (
     <button
       data-testid={testId}
       onClick={onClick}
       disabled={disabled}
-      className={`px-2.5 py-1 rounded-md border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${active ? 'bg-accent/25 text-white border-accent' : 'text-ink/70 border-border hover:text-white hover:bg-panel2'}`}
+      title={title}
+      className={
+        'px-2.5 py-1 rounded-md border text-[13px] transition-colors ' +
+        (disabled
+          ? 'text-ink/45 border-border bg-panel/60 cursor-not-allowed'
+          : active
+            ? 'bg-accent/25 text-white border-accent'
+            : 'text-ink/80 border-border hover:text-white hover:bg-panel2')
+      }
     >
       {children}
     </button>

@@ -5,6 +5,7 @@ import { useEditorStore } from '../store/editor';
 import { TileThumbnail } from './TileThumbnail';
 import { NewTilesetDialog } from './NewTilesetDialog';
 import { GenerateTilesetDialog } from './GenerateTilesetDialog';
+import { Section } from './SidePanel';
 
 export function TilesetsPanel() {
   const tilesets = useEditorStore((s) => s.sprite.tilesets);
@@ -13,36 +14,41 @@ export function TilesetsPanel() {
 
   return (
     <>
-      <div className="border-b border-border flex flex-col min-h-0" data-testid="tilesets-panel">
-        <div className="px-2.5 h-7 flex items-center gap-2 text-[10px] uppercase tracking-wider text-ink/60 bg-panel2">
-          <span>Tilesets</span>
-          <span className="flex-1" />
-          <button
-            data-testid="tileset-generate"
-            className="text-ink/70 hover:text-white"
-            onClick={() => setGenOpen(true)}
-            title="Generate from layer"
-          >
-            <Sparkles size={11} />
-          </button>
-          <button
-            data-testid="tileset-new"
-            className="text-ink/70 hover:text-white"
-            onClick={() => setOpen(true)}
-            title="New tileset"
-          >
-            <Plus size={12} />
-          </button>
-        </div>
-        <div className="min-h-0 overflow-auto">
-          {tilesets.length === 0 && (
-            <p className="text-[11px] text-ink/50 px-2.5 py-2">
-              No tilesets yet. Use <span className="text-white">+</span> for empty or <span className="text-white">✨</span> to auto-generate from a layer.
-            </p>
-          )}
-          {tilesets.map((t) => <TilesetBlock key={t.id} tilesetId={t.id} />)}
-        </div>
-      </div>
+      <Section
+        title="Tilesets"
+        resizable
+        defaultHeight={200}
+        minHeight={80}
+        storageKey="tilestudio:sidepanel:tilesets-height"
+        testId="tilesets-panel"
+        right={
+          <>
+            <button
+              data-testid="tileset-generate"
+              className="text-ink/70 hover:text-white"
+              onClick={() => setGenOpen(true)}
+              title="Generate from layer"
+            >
+              <Sparkles size={11} />
+            </button>
+            <button
+              data-testid="tileset-new"
+              className="text-ink/70 hover:text-white"
+              onClick={() => setOpen(true)}
+              title="New tileset"
+            >
+              <Plus size={12} />
+            </button>
+          </>
+        }
+      >
+        {tilesets.length === 0 && (
+          <p className="text-[11px] text-ink/50 px-2.5 py-2">
+            No tilesets yet. Use <span className="text-white">+</span> for empty or <span className="text-white">✨</span> to auto-generate from a layer.
+          </p>
+        )}
+        {tilesets.map((t) => <TilesetBlock key={t.id} tilesetId={t.id} />)}
+      </Section>
       <NewTilesetDialog open={open} onClose={() => setOpen(false)} />
       <GenerateTilesetDialog open={genOpen} onClose={() => setGenOpen(false)} />
     </>

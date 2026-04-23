@@ -29,7 +29,7 @@ export function Dialog({ open, onClose, title, children }: {
         aria-label={title}
         data-testid="dialog"
       >
-        <h2 className="text-sm font-semibold text-white sticky top-0 bg-panel -mt-4 pt-4 pb-1 -mx-4 px-4 z-10">{title}</h2>
+        <h2 className="text-sm font-semibold text-white -mt-4 pt-4 pb-2.5 -mx-4 px-4 mb-1 border-b border-border/60">{title}</h2>
         {children}
       </div>
     </div>

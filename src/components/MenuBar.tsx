@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import clsx from 'clsx';
+import { BookOpen } from 'lucide-react';
 import { toast } from 'sonner';
 import { useEditorStore } from '../store/editor';
 import { newSprite } from '../model/factory';
@@ -412,6 +413,25 @@ export function MenuBar() {
       <Menu id="layer" label="Layer" items={layerMenu} openMenu={openMenu} setOpenMenu={setOpenMenu} />
       <Menu id="frame" label="Frame" items={frameMenu} openMenu={openMenu} setOpenMenu={setOpenMenu} />
       <Menu id="tileset" label="Tileset" items={tilesetMenu} openMenu={openMenu} setOpenMenu={setOpenMenu} />
+      <a
+        href="/wiki"
+        target="_blank"
+        rel="noreferrer"
+        data-testid="menu-docs"
+        className="px-2.5 h-7 text-[12px] rounded-md transition-colors inline-flex items-center gap-1.5 text-ink/80 hover:bg-panel2 hover:text-white"
+        title="Open documentation (new tab)"
+      >
+        <BookOpen size={12} />
+        <span>Docs</span>
+      </a>
+      <span className="flex-1" />
+      <span
+        className="px-2 h-6 inline-flex items-center rounded-md border border-border bg-panel2 text-ink/70 font-mono text-[10.5px] tracking-tight"
+        title={`Tile Studio v${__APP_VERSION__}`}
+        data-testid="app-version"
+      >
+        v{__APP_VERSION__}
+      </span>
       <ExportDialog open={exportOpen} onClose={() => setExportOpen(false)} />
       <GenerateTilesetDialog open={generateOpen} onClose={() => setGenerateOpen(false)} />
       <NewTilesetDialog open={newTsOpen} onClose={() => setNewTsOpen(false)} />

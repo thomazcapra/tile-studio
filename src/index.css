@@ -3,20 +3,122 @@
 @tailwind utilities;
 
 html, body, #root {
-  height: 100%;
+  min-height: 100%;
   margin: 0;
   background: #121212;
   color: #d4d4d4;
   font-family: ui-sans-serif, system-ui, sans-serif;
-  overflow: hidden;
 }
 
 #root {
   display: flex;
   flex-direction: column;
+  min-height: 100vh;
 }
 
 canvas {
   image-rendering: pixelated;
   image-rendering: crisp-edges;
+}
+
+/* ─── Themed scrollbars (Webkit + Firefox) ────────────────── */
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #3c3c3c transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+  background: transparent;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: #3c3c3c;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 6px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: #4e4e4e;
+  background-clip: padding-box;
+  border: 2px solid transparent;
+}
+
+*::-webkit-scrollbar-thumb:active {
+  background: #5c5c5c;
+  background-clip: padding-box;
+  border: 2px solid transparent;
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Hide the native up/down scrollbar arrows entirely */
+*::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+/* Slimmer scrollbar inside tight panels */
+.scrollbar-slim {
+  scrollbar-width: thin;
+}
+
+.scrollbar-slim::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+.scrollbar-slim::-webkit-scrollbar-thumb {
+  background: #3c3c3c;
+  border: 1px solid transparent;
+  background-clip: padding-box;
+}
+
+.scrollbar-slim::-webkit-scrollbar-thumb:hover {
+  background: #4e4e4e;
+  background-clip: padding-box;
+  border: 1px solid transparent;
+}
+
+/* Section resize gutter */
+.section-resizer {
+  height: 4px;
+  cursor: row-resize;
+  background: transparent;
+  position: relative;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.section-resizer::after {
+  content: '';
+  position: absolute;
+  inset: 1px 0;
+  background: transparent;
+  transition: background 0.12s;
+}
+
+.section-resizer:hover::after,
+.section-resizer.is-dragging::after {
+  background: #3794ff;
+}
+
+body.section-resizing {
+  cursor: row-resize;
+  user-select: none;
+}
+
+body.section-resizing * {
+  cursor: row-resize !important;
+  user-select: none !important;
 }

@@ -8,6 +8,23 @@ A browser-based pixel-art and tilemap editor inspired by [Aseprite](https://www.
 
 ---
 
+## Wiki
+
+Feature documentation now lives in [`docs/wiki`](docs/wiki/Home.md).
+
+- [Home](docs/wiki/Home.md)
+- [Getting Started](docs/wiki/Getting-Started.md)
+- [Workspace and Modes](docs/wiki/Workspace-and-Modes.md)
+- [Drawing and Selection](docs/wiki/Drawing-and-Selection.md)
+- [Layers, Frames, and Animation](docs/wiki/Layers-Frames-and-Animation.md)
+- [Tilesets and Tilemaps](docs/wiki/Tilesets-and-Tilemaps.md)
+- [Color, Palette, and Import Workflows](docs/wiki/Color-Palette-and-Import.md)
+- [Export, Persistence, and Preferences](docs/wiki/Export-Persistence-and-Preferences.md)
+- [Keyboard Shortcuts and Commands](docs/wiki/Keyboard-Shortcuts-and-Commands.md)
+- [Data Model and Project Format](docs/wiki/Data-Model-and-Project-Format.md)
+
+---
+
 ## Why?
 
 Aseprite is great desktop software, but distributing a pixel-art workflow over the web has real advantages:
