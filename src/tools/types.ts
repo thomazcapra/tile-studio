@@ -18,6 +18,8 @@ export interface ToolContext {
   brushSize: number;        // 1 = single pixel, N = square of N×N
   pixelPerfect: boolean;    // skip double-pixels on diagonals
   symmetryMode: 'none' | 'h' | 'v' | 'both';
+  // Optional custom brush — if set, pencil stamps this shape instead of a solid square.
+  customBrush?: { w: number; h: number; data: Uint32Array; mask: Uint8Array } | null;
 }
 
 export interface ToolSession {

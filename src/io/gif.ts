@@ -15,7 +15,7 @@ export function exportAnimatedGIF(sprite: Sprite, opts: GifExportOptions = {}): 
   const maxColors = Math.max(2, Math.min(256, opts.maxColorsPerFrame ?? 256));
 
   for (let i = 0; i < total; i++) {
-    const imgData = compositeFrame(sprite, i);
+    const imgData = compositeFrame(sprite, i, { includeReference: false });
     const rgba = imgData.data; // Uint8ClampedArray RGBA
     // gifenc expects Uint8Array/Uint8ClampedArray. quantize() returns a palette.
     const palette = quantize(rgba, maxColors);

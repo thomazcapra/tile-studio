@@ -2,40 +2,59 @@ import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { Button, Dialog, DialogActions, DialogField, NumberInput } from './Dialog';
 import { useEditorStore } from '../store/editor';
-import { buildExport, collectTilemapLayers, spriteFramePNG, tilesetAtlasPNG, zipFiles, type JsonFormat } from '../io/export';
+import {
+  buildExport,
+  collectTilemapLayers,
+  extFor,
+  spriteFrameImage,
+  spriteFrameSequence,
+  spriteSheetWithMeta,
+  tilesetAtlasPNG,
+  zipFiles,
+  type ImageFormat,
+  type JsonFormat,
+} from '../io/export';
 import { downloadBlob } from '../io/png';
 import { exportAnimatedGIF } from '../io/gif';
+
+type Kind = 'tileset' | 'sprite' | 'sequence' | 'sheet' | 'gif';
 
 export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const sprite = useEditorStore((s) => s.sprite);
   const currentFrame = useEditorStore((s) => s.currentFrame);
   const tilesets = sprite.tilesets;
 
-  const [kind, setKind] = useState<'tileset' | 'sprite' | 'gif'>('tileset');
+  const [kind, setKind] = useState<Kind>('tileset');
   const [tilesetId, setTilesetId] = useState<string>('');
   const [format, setFormat] = useState<JsonFormat>('tiled');
+  const [imageFormat, setImageFormat] = useState<ImageFormat>('png');
   const [columns, setColumns] = useState(16);
+  const [sheetCols, setSheetCols] = useState(8);
+  const [sheetLayout, setSheetLayout] = useState<'array' | 'hash'>('hash');
   const [base, setBase] = useState('export');
   const [bundle, setBundle] = useState(true);
+  const [quality, setQuality] = useState(92);
   const [running, setRunning] = useState(false);
 
-  // Re-sync defaults each time the dialog opens, since tilesets may have been
-  // created between mount and open.
+  const multiFrame = sprite.frames.length > 1;
+
   useEffect(() => {
     if (!open) return;
     if (tilesets.length === 0) {
-      setKind(sprite.frames.length > 1 ? 'gif' : 'sprite');
+      setKind(multiFrame ? 'sheet' : 'sprite');
     } else {
       setKind('tileset');
       if (!tilesets.find((t) => t.id === tilesetId)) setTilesetId(tilesets[0].id);
     }
-  }, [open, tilesets, tilesetId, sprite.frames.length]);
+  }, [open, tilesets, tilesetId, multiFrame]);
 
   const tileset = tilesets.find((t) => t.id === tilesetId);
   const layers = useMemo(
     () => (tileset ? collectTilemapLayers(sprite, tileset.id, currentFrame) : []),
     [sprite, tileset, currentFrame]
   );
+
+  const qualityNorm = Math.max(0.01, Math.min(1, quality / 100));
 
   async function runTileset() {
     if (!tileset) { toast.error('Pick a tileset'); return; }
@@ -61,9 +80,54 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
   async function runSprite() {
     setRunning(true);
     try {
-      const png = await spriteFramePNG(sprite, currentFrame);
-      downloadBlob(png, `${base}.png`);
-      toast.success(`Exported ${base}.png`);
+      const blob = await spriteFrameImage(sprite, currentFrame, imageFormat, qualityNorm);
+      const name = `${base}.${extFor(imageFormat)}`;
+      downloadBlob(blob, name);
+      toast.success(`Exported ${name}`);
+      onClose();
+    } catch (err) {
+      toast.error(`Export failed: ${(err as Error).message}`);
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  async function runSequence() {
+    setRunning(true);
+    try {
+      const files = await spriteFrameSequence(sprite, {
+        format: imageFormat,
+        filenameBase: base,
+        quality: qualityNorm,
+      });
+      const zip = await zipFiles(files, `${base}.zip`);
+      downloadBlob(zip, `${base}.zip`);
+      toast.success(`Exported ${files.length} frames as ${base}.zip`);
+      onClose();
+    } catch (err) {
+      toast.error(`Export failed: ${(err as Error).message}`);
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  async function runSheet() {
+    setRunning(true);
+    try {
+      const files = await spriteSheetWithMeta(sprite, sheetCols, {
+        format: imageFormat,
+        filenameBase: base,
+        layout: sheetLayout,
+        quality: qualityNorm,
+      });
+      if (bundle) {
+        const zip = await zipFiles(files, `${base}.zip`);
+        downloadBlob(zip, `${base}.zip`);
+        toast.success(`Exported sprite sheet as ${base}.zip`);
+      } else {
+        for (const f of files) downloadBlob(f.blob, f.name);
+        toast.success(`Exported sprite sheet (${files.length} files)`);
+      }
       onClose();
     } catch (err) {
       toast.error(`Export failed: ${(err as Error).message}`);
@@ -93,21 +157,40 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
     toast.success(`Saved atlas preview`);
   }
 
+  function doRun() {
+    switch (kind) {
+      case 'tileset': return runTileset();
+      case 'sprite': return runSprite();
+      case 'sequence': return runSequence();
+      case 'sheet': return runSheet();
+      case 'gif': return runGif();
+    }
+  }
+
+  const showImageFormat = kind === 'sprite' || kind === 'sequence' || kind === 'sheet';
+  const showQuality = showImageFormat && imageFormat !== 'png';
+
   return (
     <Dialog open={open} onClose={running ? () => {} : onClose} title="Export">
-      <div className="flex gap-1 text-[11px]">
+      <div className="flex gap-1 flex-wrap text-[11px]">
         <KindTab active={kind === 'tileset'} onClick={() => setKind('tileset')} disabled={tilesets.length === 0} testId="kind-tileset">
           Tileset + map
         </KindTab>
         <KindTab active={kind === 'sprite'} onClick={() => setKind('sprite')} testId="kind-sprite">
-          Flat PNG
+          Flat image
         </KindTab>
-        <KindTab active={kind === 'gif'} onClick={() => setKind('gif')} disabled={sprite.frames.length < 2} testId="kind-gif">
+        <KindTab active={kind === 'sequence'} onClick={() => setKind('sequence')} disabled={!multiFrame} testId="kind-sequence">
+          Frame sequence
+        </KindTab>
+        <KindTab active={kind === 'sheet'} onClick={() => setKind('sheet')} testId="kind-sheet" disabled={!multiFrame}>
+          Sprite sheet
+        </KindTab>
+        <KindTab active={kind === 'gif'} onClick={() => setKind('gif')} disabled={!multiFrame} testId="kind-gif">
           Animated GIF
         </KindTab>
       </div>
 
-      {kind === 'tileset' ? (
+      {kind === 'tileset' && (
         <>
           <DialogField label="Tileset">
             <select
@@ -138,27 +221,6 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
           <DialogField label="Atlas columns">
             <NumberInput value={columns} onChange={setColumns} min={1} max={64} />
           </DialogField>
-          <DialogField label="Filename base">
-            <input
-              data-testid="ex-base"
-              className="w-full bg-panel2 border border-border rounded px-2 py-1 font-mono text-[11px] outline-none focus:border-accent disabled:opacity-50"
-              value={base}
-              onChange={(e) => setBase(e.target.value.replace(/[^a-z0-9_\-]/gi, ''))}
-              disabled={running}
-            />
-          </DialogField>
-          <DialogField label="Bundle as ZIP">
-            <label className="inline-flex items-center gap-2 text-[11px] text-ink/80">
-              <input
-                data-testid="ex-zip"
-                type="checkbox"
-                checked={bundle}
-                onChange={(e) => setBundle(e.target.checked)}
-                disabled={running}
-              />
-              Single download
-            </label>
-          </DialogField>
           <div className="text-[10px] text-ink/60 font-mono" data-testid="ex-summary">
             {tileset ? (
               <>
@@ -167,44 +229,99 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
             ) : <>No tilesets available</>}
           </div>
         </>
-      ) : kind === 'sprite' ? (
+      )}
+
+      {kind === 'sheet' && (
         <>
-          <DialogField label="Filename base">
-            <input
-              data-testid="ex-base-sprite"
-              className="w-full bg-panel2 border border-border rounded px-2 py-1 font-mono text-[11px] outline-none focus:border-accent disabled:opacity-50"
-              value={base}
-              onChange={(e) => setBase(e.target.value.replace(/[^a-z0-9_\-]/gi, ''))}
+          <DialogField label="Columns">
+            <NumberInput value={sheetCols} onChange={setSheetCols} min={1} max={sprite.frames.length} />
+          </DialogField>
+          <DialogField label="JSON layout">
+            <select
+              data-testid="ex-sheet-layout"
+              value={sheetLayout}
+              onChange={(e) => setSheetLayout(e.target.value as 'array' | 'hash')}
               disabled={running}
-            />
+              className="w-full bg-panel2 border border-border rounded px-2 py-1 font-mono text-[11px] outline-none focus:border-accent disabled:opacity-50"
+            >
+              <option value="hash">Aseprite JSON Hash (Phaser, PixiJS)</option>
+              <option value="array">Aseprite JSON Array (TexturePacker-style)</option>
+            </select>
           </DialogField>
           <div className="text-[10px] text-ink/60 font-mono">
-            Exports current frame composited: {sprite.w}×{sprite.h} PNG
-          </div>
-        </>
-      ) : (
-        <>
-          <DialogField label="Filename base">
-            <input
-              data-testid="ex-base-gif"
-              className="w-full bg-panel2 border border-border rounded px-2 py-1 font-mono text-[11px] outline-none focus:border-accent disabled:opacity-50"
-              value={base}
-              onChange={(e) => setBase(e.target.value.replace(/[^a-z0-9_\-]/gi, ''))}
-              disabled={running}
-            />
-          </DialogField>
-          <div className="text-[10px] text-ink/60 font-mono">
-            {sprite.frames.length} frames · {sprite.w}×{sprite.h} · durations from timeline
+            {sprite.frames.length} frames · {sheetCols}×{Math.ceil(sprite.frames.length / sheetCols)} grid
           </div>
         </>
       )}
+
+      {showImageFormat && (
+        <DialogField label="Image format">
+          <select
+            data-testid="ex-image-format"
+            value={imageFormat}
+            onChange={(e) => setImageFormat(e.target.value as ImageFormat)}
+            disabled={running}
+            className="w-full bg-panel2 border border-border rounded px-2 py-1 font-mono text-[11px] outline-none focus:border-accent disabled:opacity-50"
+          >
+            <option value="png">PNG (lossless)</option>
+            <option value="webp">WebP</option>
+            <option value="jpeg">JPEG (no alpha)</option>
+          </select>
+        </DialogField>
+      )}
+
+      {showQuality && (
+        <DialogField label="Quality (1–100)">
+          <NumberInput value={quality} onChange={setQuality} min={1} max={100} />
+        </DialogField>
+      )}
+
+      {kind !== 'tileset' && kind !== 'gif' && kind !== 'sprite' && (
+        <DialogField label="Bundle as ZIP">
+          <label className="inline-flex items-center gap-2 text-[11px] text-ink/80">
+            <input
+              data-testid="ex-zip"
+              type="checkbox"
+              checked={bundle}
+              onChange={(e) => setBundle(e.target.checked)}
+              disabled={running || kind === 'sequence'}
+            />
+            {kind === 'sequence' ? 'Always zipped' : 'Single download'}
+          </label>
+        </DialogField>
+      )}
+
+      {kind === 'tileset' && (
+        <DialogField label="Bundle as ZIP">
+          <label className="inline-flex items-center gap-2 text-[11px] text-ink/80">
+            <input
+              data-testid="ex-zip"
+              type="checkbox"
+              checked={bundle}
+              onChange={(e) => setBundle(e.target.checked)}
+              disabled={running}
+            />
+            Single download
+          </label>
+        </DialogField>
+      )}
+
+      <DialogField label="Filename base">
+        <input
+          data-testid="ex-base"
+          className="w-full bg-panel2 border border-border rounded px-2 py-1 font-mono text-[11px] outline-none focus:border-accent disabled:opacity-50"
+          value={base}
+          onChange={(e) => setBase(e.target.value.replace(/[^a-z0-9_-]/gi, ''))}
+          disabled={running}
+        />
+      </DialogField>
 
       <DialogActions>
         <Button onClick={onClose}>Cancel</Button>
         {kind === 'tileset' && (
           <Button testId="ex-atlas" onClick={previewAtlas}>Atlas PNG only</Button>
         )}
-        <Button variant="primary" testId="ex-submit" onClick={kind === 'tileset' ? runTileset : kind === 'gif' ? runGif : runSprite}>
+        <Button variant="primary" testId="ex-submit" onClick={doRun}>
           {running ? 'Exporting…' : 'Export'}
         </Button>
       </DialogActions>

@@ -71,9 +71,15 @@ export interface Palette {
   colors: Uint32Array; // up to 256 RGBA entries
 }
 
+export interface TileAnimation {
+  frames: (ImageRGBA | ImageIndexed)[]; // includes the base frame at index 0
+  frameMs: number;                      // duration per frame
+}
+
 export interface Tile {
   image: ImageRGBA | ImageIndexed; // actual pixels
   userData?: Record<string, unknown>;
+  animation?: TileAnimation;       // optional per-tile frame animation
 }
 
 export interface Tileset {
@@ -85,7 +91,7 @@ export interface Tileset {
   hash: Map<string, number>;
 }
 
-export type LayerType = 'raster' | 'tilemap' | 'group';
+export type LayerType = 'raster' | 'tilemap' | 'group' | 'reference';
 
 export type BlendMode =
   | 'normal' | 'multiply' | 'screen' | 'darken' | 'lighten'
@@ -106,6 +112,12 @@ export interface RasterLayer extends LayerCommon {
   type: 'raster';
 }
 
+// Reference layers are tracing guides — never included in exports, rendered
+// with an opacity scale by the compositor unless `hidden`.
+export interface ReferenceLayer extends LayerCommon {
+  type: 'reference';
+}
+
 export interface TilemapLayer extends LayerCommon {
   type: 'tilemap';
   tilesetId: string;
@@ -114,9 +126,10 @@ export interface TilemapLayer extends LayerCommon {
 export interface GroupLayer extends LayerCommon {
   type: 'group';
   childIds: string[];
+  expanded?: boolean;   // UI collapse state; treat missing as true for back-compat
 }
 
-export type Layer = RasterLayer | TilemapLayer | GroupLayer;
+export type Layer = RasterLayer | TilemapLayer | GroupLayer | ReferenceLayer;
 
 export interface Cel {
   id: string;
@@ -126,6 +139,9 @@ export interface Cel {
   y: number;
   opacity: number; // 0..255
   image: AnyImage;
+  // Cels that share a linkedGroupId all point at the same `image` reference,
+  // so painting any one of them updates them all. Kept for serialization.
+  linkedGroupId?: string;
 }
 
 export interface Frame {
@@ -143,6 +159,24 @@ export interface Tag {
   color: string;      // hex (#rrggbb) for the tag strip
 }
 
+// A slice — a named rectangular region with optional per-frame bounds + pivot.
+// Used for UI 9-slice exports, hitbox atlases, animation metadata, etc.
+export interface SliceKey {
+  frame: number;
+  bounds: { x: number; y: number; w: number; h: number };
+  pivot?: { x: number; y: number };
+  // 9-slice center rect (relative to bounds). If present, tools can rely on it.
+  center?: { x: number; y: number; w: number; h: number };
+  userData?: Record<string, unknown>;
+}
+
+export interface Slice {
+  id: string;
+  name: string;
+  color: string; // hex strip color for the overlay
+  keys: SliceKey[];
+}
+
 export interface Sprite {
   id: string;
   name: string;
@@ -156,4 +190,5 @@ export interface Sprite {
   cels: Cel[];
   tilesets: Tileset[];
   tags?: Tag[];
+  slices?: Slice[];
 }

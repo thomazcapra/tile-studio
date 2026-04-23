@@ -58,7 +58,9 @@ function TilesetBlock({ tilesetId }: { tilesetId: string }) {
   const addTile = useEditorStore((s) => s.addTile);
   const duplicateTile = useEditorStore((s) => s.duplicateTile);
   const deleteTile = useEditorStore((s) => s.deleteTile);
+  const reorderTile = useEditorStore((s) => s.reorderTile);
   const [menu, setMenu] = useState<{ x: number; y: number; index: number } | null>(null);
+  const [dragIdx, setDragIdx] = useState<number | null>(null);
 
   if (!tileset) return null;
 
@@ -95,11 +97,21 @@ function TilesetBlock({ tilesetId }: { tilesetId: string }) {
               onClick={() => selectTile(tilesetId, i)}
               onDoubleClick={() => open(i)}
               onContextMenu={(e) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY, index: i }); }}
+              draggable
+              onDragStart={(e) => { setDragIdx(i); e.dataTransfer.effectAllowed = 'move'; }}
+              onDragOver={(e) => { if (dragIdx != null && dragIdx !== i) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; } }}
+              onDrop={(e) => {
+                e.preventDefault();
+                if (dragIdx != null && dragIdx !== i) reorderTile(tilesetId, dragIdx, i);
+                setDragIdx(null);
+              }}
+              onDragEnd={() => setDragIdx(null)}
               className={clsx(
                 'relative rounded-sm overflow-hidden group ring-1 transition-all',
-                active ? 'ring-accent' : 'ring-black/40 hover:ring-accent/50'
+                active ? 'ring-accent' : 'ring-black/40 hover:ring-accent/50',
+                dragIdx === i && 'opacity-50',
               )}
-              title={`Tile #${i} — double-click to edit`}
+              title={`Tile #${i} — drag to reorder · double-click to edit`}
               style={{ width: thumbSize, height: thumbSize }}
             >
               <div className="absolute inset-0" style={{

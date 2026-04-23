@@ -7,10 +7,13 @@ import { StatusBar } from './components/StatusBar';
 import { Viewport } from './components/Viewport';
 import { ToolPalette } from './components/ToolPalette';
 import { Timeline } from './components/Timeline';
+import { CommandPalette } from './components/CommandPalette';
 import { useShortcuts } from './hooks/useShortcuts';
 import { usePlayback } from './hooks/usePlayback';
 import { useAutosave } from './hooks/useAutosave';
 import { useRestoreAutosave } from './hooks/useRestoreAutosave';
+import { useTileAnimationClock } from './hooks/useTileAnimationClock';
+import { Minimap } from './components/Minimap';
 import { decodePNG, spriteFromImage } from './io/png';
 import { useEditorStore } from './store/editor';
 
@@ -19,19 +22,34 @@ export default function App() {
   usePlayback();
   useRestoreAutosave();
   useAutosave();
+  useTileAnimationClock();
   useDragDrop();
+  const distractionFree = useEditorStore((s) => s.distractionFree);
+  const [cmdOpen, setCmdOpen] = useState(false);
+  useEffect(() => {
+    function handler(e: Event) {
+      const detail = (e as CustomEvent<string>).detail;
+      if (detail === 'open-command-palette') setCmdOpen(true);
+    }
+    window.addEventListener('tile-studio:action', handler);
+    return () => window.removeEventListener('tile-studio:action', handler);
+  }, []);
 
   return (
-    <div className="h-full flex flex-col" data-testid="app-root">
-      <MenuBar />
-      <Toolbar />
+    <div className="h-full flex flex-col" data-testid="app-root" data-distraction-free={String(distractionFree)}>
+      {!distractionFree && <MenuBar />}
+      {!distractionFree && <Toolbar />}
       <div className="flex-1 flex min-h-0">
-        <ToolPalette />
-        <Viewport />
-        <SidePanel />
+        {!distractionFree && <ToolPalette />}
+        <div className="flex-1 flex min-h-0 relative">
+          <Viewport />
+          <Minimap />
+        </div>
+        {!distractionFree && <SidePanel />}
       </div>
-      <Timeline />
-      <StatusBar />
+      {!distractionFree && <Timeline />}
+      {!distractionFree && <StatusBar />}
+      <CommandPalette open={cmdOpen} onClose={() => setCmdOpen(false)} />
       <Toaster
         theme="dark"
         position="bottom-right"

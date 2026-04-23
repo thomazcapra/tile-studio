@@ -9,17 +9,29 @@ import { quantize } from './color/quantize';
 import { quantizeAsync } from './color/quantize-async';
 import { pixelate } from './color/pixelate';
 import { TOOLS } from './tools/tools';
+import * as paletteIO from './io/palette-io';
+import * as exporters from './io/export';
+import * as nativeIO from './io/native';
+import { usePrefsStore } from './prefs/prefs-store';
+import { SHORTCUT_ACTIONS, keyEventToShortcut, DEFAULT_SHORTCUTS } from './prefs/shortcuts';
+import { autoTileGrid, CANONICAL_WANG_16 } from './tileset/autotile';
 
 if (import.meta.env.DEV) {
   // Exposed for E2E tests + ad-hoc debugging. Never rely on this at runtime.
   (globalThis as unknown as { __tileStudio: unknown }).__tileStudio = {
     store: useEditorStore,
+    prefs: usePrefsStore,
     generateTilesetFromImage,
     generateTilesetAsync,
     quantize,
     quantizeAsync,
     pixelate,
     tools: TOOLS,
+    paletteIO,
+    exporters,
+    nativeIO,
+    shortcuts: { SHORTCUT_ACTIONS, keyEventToShortcut, DEFAULT_SHORTCUTS },
+    autotile: { autoTileGrid, CANONICAL_WANG_16 },
   };
 }
 

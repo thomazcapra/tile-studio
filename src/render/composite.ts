@@ -2,25 +2,44 @@ import type { AnyImage, BlendMode, Cel, Sprite } from '../model/types';
 import { TILE_FLIP_D, TILE_FLIP_X, TILE_FLIP_Y, tileFlags, readTilesetIndex } from '../model/types';
 
 // Composite visible layers for a given frame. Supports per-layer opacity + blend mode.
-export function compositeFrame(sprite: Sprite, frame: number): ImageData {
+// A layer whose ancestor group is hidden contributes nothing.
+// When `includeReference` is false (default: true), reference layers are skipped —
+// use that path for exports.
+export function compositeFrame(sprite: Sprite, frame: number, opts: { includeReference?: boolean; tileClockMs?: number } = {}): ImageData {
   const out = new ImageData(sprite.w, sprite.h);
   const dst = new Uint32Array(out.data.buffer);
+  const includeReference = opts.includeReference ?? true;
+  const tileClockMs = opts.tileClockMs ?? 0;
+
+  function ancestorHidden(layer: Sprite['layers'][number]): boolean {
+    const cur: typeof layer | undefined = layer;
+    let pid = cur.parentId;
+    while (pid) {
+      const p = sprite.layers.find((x) => x.id === pid);
+      if (!p) break;
+      if (!p.visible) return true;
+      pid = p.parentId;
+    }
+    return false;
+  }
 
   for (const layerId of sprite.layerOrder) {
     const layer = sprite.layers.find((l) => l.id === layerId);
     if (!layer || !layer.visible || layer.type === 'group') continue;
+    if (layer.type === 'reference' && !includeReference) continue;
+    if (ancestorHidden(layer)) continue;
 
     const cel = sprite.cels.find((c) => c.layerId === layerId && c.frame === frame);
     if (!cel) continue;
 
     const mode = layer.blendMode ?? 'normal';
     const opacity = layer.opacity / 255;
-    blitCel(dst, sprite.w, sprite.h, cel, sprite, mode, opacity);
+    blitCel(dst, sprite.w, sprite.h, cel, sprite, mode, opacity, tileClockMs);
   }
   return out;
 }
 
-function blitCel(dst: Uint32Array, dw: number, dh: number, cel: Cel, sprite: Sprite, mode: BlendMode, opacity: number) {
+function blitCel(dst: Uint32Array, dw: number, dh: number, cel: Cel, sprite: Sprite, mode: BlendMode, opacity: number, tileClockMs: number) {
   const img = cel.image;
   if (img.colorMode === 'rgba') {
     blitRGBABlended(dst, dw, dh, cel.x, cel.y, img.w, img.h, img.data, mode, opacity);
@@ -38,7 +57,7 @@ function blitCel(dst: Uint32Array, dw: number, dh: number, cel: Cel, sprite: Spr
       }
     }
   } else if (img.colorMode === 'tilemap') {
-    blitTilemap(dst, dw, dh, cel, sprite, img);
+    blitTilemap(dst, dw, dh, cel, sprite, img, tileClockMs);
   }
 }
 
@@ -108,7 +127,7 @@ function overlayCh(d: number, s: number): number {
   return d < 128 ? (2 * s * d) / 255 : 255 - (2 * (255 - s) * (255 - d)) / 255;
 }
 
-function blitTilemap(dst: Uint32Array, dw: number, dh: number, cel: Cel, sprite: Sprite, img: AnyImage) {
+function blitTilemap(dst: Uint32Array, dw: number, dh: number, cel: Cel, sprite: Sprite, img: AnyImage, tileClockMs: number) {
   if (img.colorMode !== 'tilemap') return;
   const layer = sprite.layers.find((l) => l.id === cel.layerId);
   if (!layer || layer.type !== 'tilemap') return;
@@ -125,7 +144,13 @@ function blitTilemap(dst: Uint32Array, dw: number, dh: number, cel: Cel, sprite:
       const flags = tileFlags(word);
       const baseX = cel.x + tx * tw;
       const baseY = cel.y + ty * th;
-      const timg = tile.image;
+      // Select the animated frame for this tile if one is attached.
+      let timg: AnyImage = tile.image;
+      if (tile.animation && tile.animation.frames.length > 0) {
+        const { frames, frameMs } = tile.animation;
+        const fi = Math.floor(tileClockMs / frameMs) % frames.length;
+        timg = frames[fi] ?? tile.image;
+      }
       if (timg.colorMode === 'rgba') {
         if (flags === 0) {
           blitRGBABlended(dst, dw, dh, baseX, baseY, timg.w, timg.h, timg.data, 'normal', 1);

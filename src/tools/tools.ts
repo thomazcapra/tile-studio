@@ -18,6 +18,21 @@ function makeLineSession(ctx: ToolContext, label: string, color: number, startX:
     recordSet(patch, y * image.w + x, color);
   };
   const plotBrushOne = (x: number, y: number) => {
+    // Custom brush stamp — the saved data is painted relative to (x,y) centered.
+    if (ctx.customBrush) {
+      const cb = ctx.customBrush;
+      const cx = (cb.w - 1) >> 1;
+      const cy = (cb.h - 1) >> 1;
+      for (let yy = 0; yy < cb.h; yy++) {
+        for (let xx = 0; xx < cb.w; xx++) {
+          if (cb.mask[yy * cb.w + xx] === 0) continue;
+          const px = x + xx - cx, py = y + yy - cy;
+          if (px < 0 || py < 0 || px >= image.w || py >= image.h) continue;
+          recordSet(patch, py * image.w + px, cb.data[yy * cb.w + xx]);
+        }
+      }
+      return;
+    }
     if (bs === 1) { plotPixel(x, y); return; }
     for (let oy = -half; oy < bs - half; oy++) {
       for (let ox = -half; ox < bs - half; ox++) {
@@ -192,6 +207,59 @@ export const line: Tool = {
   },
 };
 
+// Linear A→B gradient between primary (at A) and secondary (at B).
+export const gradient: Tool = {
+  id: 'gradient',
+  shortcut: 'd',
+  label: 'Gradient',
+  cursor: 'crosshair',
+  begin(ctx, x, y) {
+    const patch = newStrokePatch(ctx, 'Gradient');
+    const image = ctx.image;
+    const a = ctx.primary, b = ctx.secondary;
+    const [ar, ag, ab, aa] = [a & 0xff, (a >>> 8) & 0xff, (a >>> 16) & 0xff, (a >>> 24) & 0xff];
+    const [br, bg, bb, ba] = [b & 0xff, (b >>> 8) & 0xff, (b >>> 16) & 0xff, (b >>> 24) & 0xff];
+    const startX = x, startY = y;
+    const backup = new Map<number, number>();
+    const apply = (tx: number, ty: number) => {
+      for (const [i, old] of backup) image.data[i] = old;
+      backup.clear();
+      const vx = tx - startX, vy = ty - startY;
+      const len2 = vx * vx + vy * vy;
+      if (len2 === 0) return;
+      for (let yy = 0; yy < image.h; yy++) {
+        for (let xx = 0; xx < image.w; xx++) {
+          if (!inMask(ctx, xx, yy)) continue;
+          const dx = xx - startX, dy = yy - startY;
+          let t = (dx * vx + dy * vy) / len2;
+          if (t < 0) t = 0; else if (t > 1) t = 1;
+          const r = Math.round(ar + (br - ar) * t);
+          const g = Math.round(ag + (bg - ag) * t);
+          const bch = Math.round(ab + (bb - ab) * t);
+          const al = Math.round(aa + (ba - aa) * t);
+          const i = yy * image.w + xx;
+          if (!backup.has(i)) backup.set(i, image.data[i]);
+          image.data[i] = (((al & 0xff) << 24) | ((bch & 0xff) << 16) | ((g & 0xff) << 8) | (r & 0xff)) >>> 0;
+        }
+      }
+    };
+    apply(x + 1, y); // avoid zero-length on initial click
+    return {
+      live: true,
+      move(x2, y2) { apply(x2, y2); },
+      end() {
+        for (const [i, old] of backup) {
+          const newColor = image.data[i];
+          if (old === newColor) continue;
+          patch.oldColors.set(i, old);
+          patch.newColors.set(i, newColor);
+        }
+        return patch.newColors.size ? patch : null;
+      },
+    };
+  },
+};
+
 function rectTool(id: string, label: string, shortcut: string, filled: boolean): Tool {
   return {
     id, shortcut, label,
@@ -261,7 +329,17 @@ export const selectWand: Tool = {
   begin() { return { live: false, move() {}, end: () => null }; },
 };
 
+// The text tool is dialog-based: it just switches to a mode where clicking the canvas opens the
+// TextDialog. No session-level pixel work is done here.
+export const textTool: Tool = {
+  id: 'text',
+  shortcut: 't',
+  label: 'Text',
+  cursor: 'text',
+  begin() { return { live: false, move() {}, end: () => null }; },
+};
+
 export const TOOLS: Record<string, Tool> = {
-  pencil, eraser, bucket, eyedropper, line, rect, rectfill,
+  pencil, eraser, bucket, eyedropper, line, rect, rectfill, gradient, text: textTool,
   'select-rect': selectRect, 'select-ellipse': selectEllipse, 'select-lasso': selectLasso, 'select-wand': selectWand,
 };

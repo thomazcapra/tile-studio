@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useEditorStore, type ToolId } from '../store/editor';
 import { compositeFrame, drawCheckerboard, imageRGBAToImageData } from '../render/composite';
 import { TOOLS } from '../tools/tools';
@@ -6,6 +6,7 @@ import type { ToolSession } from '../tools/types';
 import { lineEach } from '../render/image-ops';
 import { makeTileWord, TILE_FLIP_D, TILE_FLIP_X, TILE_FLIP_Y, type Sprite } from '../model/types';
 import type { PixelPatch } from '../store/history';
+import { TextDialog } from './TextDialog';
 
 // Build a tinted ghost canvas for a frame (used by onion skin).
 function buildOnionCanvas(sprite: Sprite, frame: number, tint: string): HTMLCanvasElement {
@@ -65,6 +66,7 @@ export function Viewport() {
   } | null>(null);
   const selectionDragRef = useRef<{ kind: 'rect' | 'ellipse'; x0: number; y0: number; x1: number; y1: number; mode: 'replace' | 'add' | 'subtract' | 'intersect' } | null>(null);
   const lassoRef = useRef<{ points: [number, number][]; mode: 'replace' | 'add' | 'subtract' | 'intersect' } | null>(null);
+  const [textPrompt, setTextPrompt] = useState<{ x: number; y: number } | null>(null);
   // Animated dashOffset for marching-ants marquee (kept in a ref to avoid React churn).
   const antsRef = useRef(0);
 
@@ -108,7 +110,7 @@ export function Viewport() {
         ctx.clearRect(0, 0, w, h);
       }
     } else {
-      ctx.putImageData(compositeFrame(sprite, frame), 0, 0);
+      ctx.putImageData(compositeFrame(sprite, frame, { tileClockMs: useEditorStore.getState().tileClockMs }), 0, 0);
     }
     offscreenRef.current = off;
     draw();
@@ -288,6 +290,73 @@ export function Viewport() {
     // Selection marching ants (drawn last so they're always visible).
     if (selection) {
       drawSelectionAnts(ctx, selection.mask, selection.w, selection.h, panX, panY, zoom, antsRef.current);
+    }
+
+    // Guides — long cyan lines spanning the canvas area.
+    const guides = useEditorStore.getState().guides;
+    if (guides.length) {
+      ctx.save();
+      ctx.strokeStyle = '#06b6d4'; // cyan-500
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 3]);
+      for (const g of guides) {
+        ctx.beginPath();
+        if (g.axis === 'h') {
+          const gy = panY + g.position * zoom;
+          ctx.moveTo(panX, gy);
+          ctx.lineTo(panX + dims.w * zoom, gy);
+        } else {
+          const gx = panX + g.position * zoom;
+          ctx.moveTo(gx, panY);
+          ctx.lineTo(gx, panY + dims.h * zoom);
+        }
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    // Slice overlays (rendered on the raster canvas so they sit above layers).
+    const slices = useEditorStore.getState().sprite.slices ?? [];
+    const selectedSliceId = useEditorStore.getState().selectedSliceId;
+    const curFrame = useEditorStore.getState().currentFrame;
+    for (const slice of slices) {
+      // Use the most recent key whose frame <= curFrame (or first key if none).
+      const key = slice.keys.filter((k) => k.frame <= curFrame).pop() ?? slice.keys[0];
+      if (!key) continue;
+      const { x, y, w, h } = key.bounds;
+      const rx = panX + x * zoom;
+      const ry = panY + y * zoom;
+      const rw = w * zoom;
+      const rh = h * zoom;
+      ctx.save();
+      ctx.strokeStyle = slice.color;
+      ctx.lineWidth = selectedSliceId === slice.id ? 2 : 1;
+      ctx.setLineDash(selectedSliceId === slice.id ? [2, 2] : []);
+      ctx.strokeRect(rx + 0.5, ry + 0.5, rw - 1, rh - 1);
+      // Name tag.
+      ctx.fillStyle = slice.color;
+      ctx.fillRect(rx, ry - 12, Math.max(36, ctx.measureText(slice.name).width + 8), 12);
+      ctx.fillStyle = '#fff';
+      ctx.font = '10px monospace';
+      ctx.fillText(slice.name, rx + 4, ry - 3);
+      ctx.restore();
+    }
+
+    // Tilemap region (tile-space) — outlined in cyan for clarity.
+    const tmapReg = useEditorStore.getState().tilemapRegion;
+    const tCtxForOutline = getTilemapCtx();
+    if (tmapReg && tCtxForOutline) {
+      const rx = panX + tmapReg.x * tCtxForOutline.tw * zoom;
+      const ry = panY + tmapReg.y * tCtxForOutline.th * zoom;
+      const rw = tmapReg.w * tCtxForOutline.tw * zoom;
+      const rh = tmapReg.h * tCtxForOutline.th * zoom;
+      ctx.save();
+      ctx.setLineDash([6, 4]);
+      ctx.lineDashOffset = -antsRef.current;
+      ctx.strokeStyle = '#22d3ee'; // cyan-400
+      ctx.lineWidth = 2;
+      ctx.strokeRect(rx + 1, ry + 1, rw - 2, rh - 2);
+      ctx.restore();
     }
 
     // Rubber-band rectangle/ellipse while dragging a selection.
@@ -473,6 +542,9 @@ export function Viewport() {
   function beginStroke(e: React.MouseEvent, button: 0 | 2) {
     const { x, y } = toSpritePixel(e.clientX, e.clientY);
     const s = useEditorStore.getState();
+    // Locked layers can't be painted on.
+    const activeLayer = s.sprite.layers.find((l) => l.id === s.currentLayerId);
+    if (activeLayer?.locked) return;
     const img = s.activeImage();
     if (!img) return;
     const cel = s.activeCel();
@@ -501,6 +573,7 @@ export function Viewport() {
         brushSize: s.brushSize,
         pixelPerfect: s.pixelPerfect,
         symmetryMode: s.symmetryMode,
+        customBrush: s.customBrush,
       },
       x, y
     );
@@ -547,6 +620,13 @@ export function Viewport() {
       draw();
       return;
     }
+    if (storeTool === 'slice') {
+      const { x, y } = toSpritePixel(e.clientX, e.clientY);
+      // Repurpose the selection drag ref to track the rubber band shape.
+      selectionDragRef.current = { kind: 'rect', x0: x, y0: y, x1: x, y1: y, mode: 'replace' };
+      draw();
+      return;
+    }
     if (storeTool === 'select-lasso') {
       const { x, y } = toSpritePixel(e.clientX, e.clientY);
       const mode = e.shiftKey ? 'add' : e.altKey ? 'subtract' : 'replace';
@@ -557,7 +637,12 @@ export function Viewport() {
     if (storeTool === 'select-wand') {
       const { x, y } = toSpritePixel(e.clientX, e.clientY);
       const mode = e.shiftKey ? 'add' : e.altKey ? 'subtract' : 'replace';
-      useEditorStore.getState().selectByColor(x, y, 0, mode);
+      useEditorStore.getState().selectByColor(x, y, useEditorStore.getState().wandTolerance, mode);
+      return;
+    }
+    if (storeTool === 'text') {
+      const { x, y } = toSpritePixel(e.clientX, e.clientY);
+      setTextPrompt({ x, y });
       return;
     }
 
@@ -616,12 +701,31 @@ export function Viewport() {
       const w = x1 - x0 + 1;
       const h = y1 - y0 + 1;
       const s = useEditorStore.getState();
+      if (s.tool === 'slice') {
+        if (w > 1 && h > 1) s.addSlice({ x: x0, y: y0, w, h });
+        selectionDragRef.current = null;
+        draw();
+        return;
+      }
       if (w <= 1 && h <= 1 && d.mode === 'replace') {
         s.deselect();
+        // Also clear any tilemap region.
+        s.setTilemapRegion(null);
       } else if (d.kind === 'ellipse') {
         s.selectEllipse(x0, y0, w, h, d.mode);
       } else {
         s.selectRect(x0, y0, w, h, d.mode);
+        // If we're on a tilemap layer, also set a tilemap region in tile-space.
+        const tCtx = getTilemapCtx();
+        if (tCtx && d.mode === 'replace') {
+          const tx0 = Math.max(0, Math.floor(x0 / tCtx.tw));
+          const ty0 = Math.max(0, Math.floor(y0 / tCtx.th));
+          const tx1 = Math.min(tCtx.mapW - 1, Math.floor((x1) / tCtx.tw));
+          const ty1 = Math.min(tCtx.mapH - 1, Math.floor((y1) / tCtx.th));
+          if (tx1 >= tx0 && ty1 >= ty0) {
+            s.setTilemapRegion({ x: tx0, y: ty0, w: tx1 - tx0 + 1, h: ty1 - ty0 + 1 });
+          }
+        }
       }
       selectionDragRef.current = null;
       draw();
@@ -670,10 +774,98 @@ export function Viewport() {
         onMouseLeave={onMouseLeave}
         onContextMenu={(e) => e.preventDefault()}
       />
+      <Rulers />
       <ViewportHud />
       <EditTargetBadge />
       <BrushFlipsHud />
+      <TextDialog
+        open={textPrompt !== null}
+        x={textPrompt?.x ?? 0}
+        y={textPrompt?.y ?? 0}
+        onClose={() => setTextPrompt(null)}
+      />
     </div>
+  );
+}
+
+// Pixel rulers along the top and left edges. Double-click adds a guide at that coordinate.
+function Rulers() {
+  const zoom = useEditorStore((s) => s.viewport.zoom);
+  const panX = useEditorStore((s) => s.viewport.panX);
+  const panY = useEditorStore((s) => s.viewport.panY);
+  // Derive dims from sprite + mode without running editTargetDims() in the selector
+  // (which would return a fresh object each render and break getSnapshot caching).
+  const dimsW = useEditorStore((s) => {
+    if (s.mode === 'tile' && s.selectedTile) {
+      const ts = s.sprite.tilesets.find((t) => t.id === s.selectedTile!.tilesetId);
+      return ts?.grid.tw ?? s.sprite.w;
+    }
+    return s.sprite.w;
+  });
+  const dimsH = useEditorStore((s) => {
+    if (s.mode === 'tile' && s.selectedTile) {
+      const ts = s.sprite.tilesets.find((t) => t.id === s.selectedTile!.tilesetId);
+      return ts?.grid.th ?? s.sprite.h;
+    }
+    return s.sprite.h;
+  });
+  const addGuide = useEditorStore((s) => s.addGuide);
+  const dims = { w: dimsW, h: dimsH };
+  // Skip ruler labels below 4× to avoid overlapping numbers.
+  const step = zoom >= 8 ? 4 : zoom >= 4 ? 8 : zoom >= 2 ? 16 : 32;
+  const xTicks: number[] = [];
+  for (let x = 0; x <= dims.w; x += step) xTicks.push(x);
+  const yTicks: number[] = [];
+  for (let y = 0; y <= dims.h; y += step) yTicks.push(y);
+  return (
+    <>
+      <div
+        data-testid="ruler-top"
+        className="absolute top-0 left-0 right-0 h-4 bg-panel2/80 border-b border-border pointer-events-auto select-none"
+        onDoubleClick={(e) => {
+          const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
+          const spriteX = Math.round((e.clientX - rect.left - panX) / zoom);
+          addGuide('v', spriteX);
+        }}
+      >
+        {xTicks.map((x) => {
+          const px = panX + x * zoom;
+          if (px < 0 || px > 4000) return null;
+          return (
+            <span
+              key={x}
+              className="absolute top-0 text-[8px] text-ink/60 font-mono leading-none"
+              style={{ left: px + 2, transform: 'translateY(2px)' }}
+            >
+              {x}
+            </span>
+          );
+        })}
+      </div>
+      <div
+        data-testid="ruler-left"
+        className="absolute top-0 left-0 bottom-0 w-4 bg-panel2/80 border-r border-border pointer-events-auto select-none"
+        onDoubleClick={(e) => {
+          const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
+          const spriteY = Math.round((e.clientY - rect.top - panY) / zoom);
+          addGuide('h', spriteY);
+        }}
+      >
+        {yTicks.map((y) => {
+          const py = panY + y * zoom;
+          if (py < 0 || py > 4000) return null;
+          return (
+            <span
+              key={y}
+              className="absolute left-0 text-[8px] text-ink/60 font-mono leading-none"
+              style={{ top: py + 2, transform: 'translateX(2px)' }}
+            >
+              {y}
+            </span>
+          );
+        })}
+      </div>
+    </>
   );
 }
 

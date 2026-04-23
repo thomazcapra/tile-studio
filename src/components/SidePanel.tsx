@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Eye, EyeOff, Lock, Unlock, Plus, Image as ImageIcon, Grid3x3, Sparkles, Copy, Trash2, ChevronUp, ChevronDown, Merge, Settings2 } from 'lucide-react';
+import { Eye, EyeOff, Lock, Unlock, Plus, Image as ImageIcon, Grid3x3, Sparkles, Copy, Trash2, ChevronUp, ChevronDown, Merge, Settings2, Folder, FolderOpen, FolderInput, FolderOutput } from 'lucide-react';
 import clsx from 'clsx';
 import { useEditorStore } from '../store/editor';
 import { ColorPicker } from './ColorPicker';
@@ -7,6 +7,9 @@ import { TilesetsPanel } from './TilesetsPanel';
 import { NewTilemapLayerDialog } from './NewTilemapLayerDialog';
 import { QuantizeDialog } from './QuantizeDialog';
 import { PaletteEditorDialog } from './PaletteEditorDialog';
+import type { Slice } from '../model/types';
+
+const EMPTY_SLICES: Slice[] = [];
 
 export function SidePanel() {
   return (
@@ -15,8 +18,58 @@ export function SidePanel() {
       <PaletteSection />
       <TilesetsPanel />
       <LayersSection />
+      <SlicesSection />
       <HistorySection />
     </aside>
+  );
+}
+
+function SlicesSection() {
+  const slices = useEditorStore((s) => s.sprite.slices ?? EMPTY_SLICES);
+  const selected = useEditorStore((s) => s.selectedSliceId);
+  const select = useEditorStore((s) => s.selectSlice);
+  const renameSlice = useEditorStore((s) => s.renameSlice);
+  const deleteSlice = useEditorStore((s) => s.deleteSlice);
+  return (
+    <Section title={`Slices (${slices.length})`}>
+      {slices.length === 0 && (
+        <p className="text-[11px] text-ink/50 px-2.5 py-2">
+          Pick the slice tool (S) and drag a rectangle to create a slice.
+        </p>
+      )}
+      <ul>
+        {slices.map((sl) => {
+          const active = sl.id === selected;
+          return (
+            <li
+              key={sl.id}
+              data-testid={`slice-${sl.id}`}
+              onClick={() => select(sl.id)}
+              className={clsx(
+                'flex items-center gap-2 px-2 py-1 border-l-2 cursor-pointer text-[11px]',
+                active ? 'bg-accent/10 border-accent' : 'border-transparent hover:bg-panel2',
+              )}
+            >
+              <span className="w-2.5 h-2.5 rounded-sm" style={{ background: sl.color }} />
+              <input
+                className="flex-1 bg-transparent text-[11px] outline-none focus:bg-panel2 px-0.5 rounded"
+                value={sl.name}
+                onChange={(e) => renameSlice(sl.id, e.target.value)}
+                data-testid={`slice-${sl.id}-name`}
+              />
+              <button
+                data-testid={`slice-${sl.id}-del`}
+                onClick={(e) => { e.stopPropagation(); deleteSlice(sl.id); }}
+                className="text-red-400 hover:text-red-300"
+                title="Delete slice"
+              >
+                <Trash2 size={11} />
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </Section>
   );
 }
 
@@ -122,6 +175,7 @@ function LayersSection() {
   const current = useEditorStore((s) => s.currentLayerId);
   const setCurrentLayer = useEditorStore((s) => s.setCurrentLayer);
   const addRaster = useEditorStore((s) => s.addRasterLayer);
+  const addGroup = useEditorStore((s) => s.addGroupLayer);
   const duplicate = useEditorStore((s) => s.duplicateLayer);
   const moveLayer = useEditorStore((s) => s.moveLayer);
   const moveUp = useEditorStore((s) => s.moveLayerUp);
@@ -129,6 +183,9 @@ function LayersSection() {
   const mergeDown = useEditorStore((s) => s.mergeLayerDown);
   const deleteLayer = useEditorStore((s) => s.deleteLayer);
   const setVisible = useEditorStore((s) => s.setLayerVisible);
+  const setLocked = useEditorStore((s) => s.setLayerLocked);
+  const setLayerParent = useEditorStore((s) => s.setLayerParent);
+  const toggleGroupExpanded = useEditorStore((s) => s.toggleGroupExpanded);
   const [menuOpen, setMenuOpen] = useState(false);
   const [tmlOpen, setTmlOpen] = useState(false);
   const [ctx, setCtx] = useState<{ x: number; y: number; layerId: string } | null>(null);
@@ -186,62 +243,117 @@ function LayersSection() {
                 >
                   <Grid3x3 size={12} /> Tilemap Layer
                 </button>
+                <button
+                  data-testid="layer-add-group"
+                  className="w-full flex items-center gap-2 px-2.5 py-1 text-left text-ink/80 hover:text-white hover:bg-panel"
+                  onClick={() => { setMenuOpen(false); addGroup(); }}
+                >
+                  <Folder size={12} /> Group
+                </button>
               </div>
             )}
           </div>
         }
       >
         <ul className="text-xs" data-testid="layers-list">
-          {sprite.layerOrder.slice().reverse().map((id) => {
-            const l = sprite.layers.find((x) => x.id === id)!;
-            const active = id === current;
-            const mode = l.blendMode ?? 'normal';
-            return (
-              <li
-                key={id}
-                data-testid={`layer-${id}`}
-                onClick={() => setCurrentLayer(id)}
-                onContextMenu={(e) => { e.preventDefault(); setCtx({ x: e.clientX, y: e.clientY, layerId: id }); }}
-                draggable
-                onDragStart={(e) => { setDragId(id); e.dataTransfer.effectAllowed = 'move'; }}
-                onDragOver={(e) => { if (dragId && dragId !== id) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; } }}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  if (dragId && dragId !== id) {
-                    const toIdx = sprite.layerOrder.indexOf(id);
-                    moveLayer(dragId, toIdx);
-                  }
-                  setDragId(null);
-                }}
-                onDragEnd={() => setDragId(null)}
-                className={clsx(
-                  'px-2 py-1 flex items-center gap-2 border-l-2 cursor-pointer',
-                  active ? 'bg-accent/10 border-accent' : 'border-transparent hover:bg-panel2',
-                  dragId === id && 'opacity-50',
-                )}
-              >
-                <button
-                  onClick={(e) => { e.stopPropagation(); setVisible(l.id, !l.visible); }}
-                  className="text-ink/70 hover:text-white"
-                  title="Toggle visible"
+          {(() => {
+            // Walk in reverse (top-to-bottom display order), indent by ancestor depth, and
+            // collapse any children whose group is collapsed.
+            const rows: { id: string; depth: number }[] = [];
+            const depthFor = (layerId: string): number => {
+              let d = 0;
+              let cur = sprite.layers.find((l) => l.id === layerId);
+              while (cur?.parentId) {
+                d++;
+                cur = sprite.layers.find((l) => l.id === cur!.parentId);
+              }
+              return d;
+            };
+            const anyAncestorCollapsed = (layerId: string): boolean => {
+              let cur = sprite.layers.find((l) => l.id === layerId);
+              while (cur?.parentId) {
+                const p = sprite.layers.find((l) => l.id === cur!.parentId);
+                if (!p) break;
+                if (p.type === 'group' && p.expanded === false) return true;
+                cur = p;
+              }
+              return false;
+            };
+            for (const id of sprite.layerOrder.slice().reverse()) {
+              if (anyAncestorCollapsed(id)) continue;
+              rows.push({ id, depth: depthFor(id) });
+            }
+            return rows.map(({ id, depth }) => {
+              const l = sprite.layers.find((x) => x.id === id)!;
+              const active = id === current;
+              const mode = l.blendMode ?? 'normal';
+              const isGroup = l.type === 'group';
+              return (
+                <li
+                  key={id}
+                  data-testid={`layer-${id}`}
+                  onClick={() => setCurrentLayer(id)}
+                  onContextMenu={(e) => { e.preventDefault(); setCtx({ x: e.clientX, y: e.clientY, layerId: id }); }}
+                  draggable
+                  onDragStart={(e) => { setDragId(id); e.dataTransfer.effectAllowed = 'move'; }}
+                  onDragOver={(e) => { if (dragId && dragId !== id) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; } }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    if (dragId && dragId !== id) {
+                      const dropLayer = sprite.layers.find((x) => x.id === id);
+                      if (e.shiftKey && dropLayer?.type === 'group') {
+                        setLayerParent(dragId, id);
+                      } else {
+                        const toIdx = sprite.layerOrder.indexOf(id);
+                        moveLayer(dragId, toIdx);
+                      }
+                    }
+                    setDragId(null);
+                  }}
+                  onDragEnd={() => setDragId(null)}
+                  className={clsx(
+                    'px-2 py-1 flex items-center gap-2 border-l-2 cursor-pointer',
+                    active ? 'bg-accent/10 border-accent' : 'border-transparent hover:bg-panel2',
+                    dragId === id && 'opacity-50',
+                  )}
+                  style={{ paddingLeft: 8 + depth * 12 }}
                 >
-                  {l.visible ? <Eye size={12} /> : <EyeOff size={12} />}
-                </button>
-                <button
-                  onClick={(e) => e.stopPropagation()}
-                  className="text-ink/70 hover:text-white"
-                  title="Toggle lock"
-                >
-                  {l.locked ? <Lock size={12} /> : <Unlock size={12} />}
-                </button>
-                <span className="flex-1 truncate" data-testid={`layer-${id}-name`}>{l.name}</span>
-                {mode !== 'normal' && (
-                  <span className="text-accent/70 uppercase text-[9px] font-mono" data-testid={`layer-${id}-blend`}>{mode}</span>
-                )}
-                <span className="text-ink/40 uppercase text-[9px]">{l.type}</span>
-              </li>
-            );
-          })}
+                  {isGroup ? (
+                    <button
+                      data-testid={`layer-${id}-toggle`}
+                      onClick={(e) => { e.stopPropagation(); toggleGroupExpanded(id); }}
+                      className="text-ink/70 hover:text-white"
+                      title={(l as unknown as { expanded?: boolean }).expanded === false ? 'Expand' : 'Collapse'}
+                    >
+                      {(l as unknown as { expanded?: boolean }).expanded === false
+                        ? <Folder size={12} />
+                        : <FolderOpen size={12} />}
+                    </button>
+                  ) : null}
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setVisible(l.id, !l.visible); }}
+                    className="text-ink/70 hover:text-white"
+                    title="Toggle visible"
+                  >
+                    {l.visible ? <Eye size={12} /> : <EyeOff size={12} />}
+                  </button>
+                  <button
+                    data-testid={`layer-${id}-lock`}
+                    onClick={(e) => { e.stopPropagation(); setLocked(l.id, !l.locked); }}
+                    className="text-ink/70 hover:text-white"
+                    title="Toggle lock"
+                  >
+                    {l.locked ? <Lock size={12} /> : <Unlock size={12} />}
+                  </button>
+                  <span className="flex-1 truncate" data-testid={`layer-${id}-name`}>{l.name}</span>
+                  {mode !== 'normal' && (
+                    <span className="text-accent/70 uppercase text-[9px] font-mono" data-testid={`layer-${id}-blend`}>{mode}</span>
+                  )}
+                  <span className="text-ink/40 uppercase text-[9px]">{l.type}</span>
+                </li>
+              );
+            });
+          })()}
         </ul>
       </Section>
       <NewTilemapLayerDialog open={tmlOpen} onClose={() => setTmlOpen(false)} />
@@ -250,9 +362,10 @@ function LayersSection() {
         const l = sprite.layers.find((x) => x.id === ctx.layerId);
         const idx = sprite.layerOrder.indexOf(ctx.layerId);
         const canMergeDown = l?.type === 'raster' && idx > 0 && sprite.layers.find((x) => x.id === sprite.layerOrder[idx - 1])?.type === 'raster';
+        const groups = sprite.layers.filter((x) => x.type === 'group' && x.id !== ctx.layerId);
         return (
           <div
-            className="fixed z-50 bg-panel2 border border-border rounded-md shadow-2xl py-1 text-xs min-w-[180px]"
+            className="fixed z-50 bg-panel2 border border-border rounded-md shadow-2xl py-1 text-xs min-w-[200px]"
             style={{ left: ctx.x, top: ctx.y }}
             onMouseLeave={() => setCtx(null)}
             data-testid="layer-ctx-menu"
@@ -261,6 +374,19 @@ function LayersSection() {
             <CtxItem testId="layer-ctx-merge" icon={<Merge size={12} />} label="Merge Down" onClick={() => { mergeDown(ctx.layerId); setCtx(null); }} disabled={!canMergeDown} />
             <CtxItem testId="layer-ctx-up" icon={<ChevronUp size={12} />} label="Move Up" onClick={() => { moveUp(ctx.layerId); setCtx(null); }} />
             <CtxItem testId="layer-ctx-down" icon={<ChevronDown size={12} />} label="Move Down" onClick={() => { moveDown(ctx.layerId); setCtx(null); }} />
+            <div className="h-px bg-border my-1" />
+            {l?.parentId && (
+              <CtxItem testId="layer-ctx-ungroup" icon={<FolderOutput size={12} />} label="Move to Root" onClick={() => { setLayerParent(ctx.layerId, null); setCtx(null); }} />
+            )}
+            {groups.map((g) => (
+              <CtxItem
+                key={g.id}
+                testId={`layer-ctx-into-${g.id}`}
+                icon={<FolderInput size={12} />}
+                label={`Move into ${g.name}`}
+                onClick={() => { setLayerParent(ctx.layerId, g.id); setCtx(null); }}
+              />
+            ))}
             <div className="h-px bg-border my-1" />
             <CtxItem testId="layer-ctx-delete" icon={<Trash2 size={12} />} label="Delete" onClick={() => { deleteLayer(ctx.layerId); setCtx(null); }} danger disabled={sprite.layers.length <= 1} />
           </div>
@@ -292,16 +418,32 @@ function CtxItem({ icon, label, onClick, disabled, danger, testId }: { icon: Rea
 function HistorySection() {
   const undoStack = useEditorStore((s) => s.undoStack);
   const redoStack = useEditorStore((s) => s.redoStack);
+  const seek = useEditorStore((s) => s.seekHistory);
+  const total = undoStack.length + redoStack.length;
+  const cursor = undoStack.length;
   return (
-    <Section title={`History (${undoStack.length}/${undoStack.length + redoStack.length})`}>
+    <Section title={`History (${cursor}/${total})`}>
       <ul className="text-[11px] font-mono text-ink/80" data-testid="history-list">
-        {undoStack.slice(-10).map((p, i) => (
-          <li key={i} className="px-2 py-0.5 flex justify-between">
+        {cursor === 0 && <li className="px-2 py-2 text-ink/40">No edits yet</li>}
+        {undoStack.map((p, i) => (
+          <li
+            key={i}
+            data-testid={`history-entry-${i}`}
+            onClick={() => seek(i + 1)}
+            className="px-2 py-0.5 flex justify-between cursor-pointer hover:bg-panel2"
+          >
             <span>{p.label}</span>
             <span className="text-ink/40">{p.newColors.size}px</span>
           </li>
         ))}
-        {undoStack.length === 0 && <li className="px-2 py-2 text-ink/40">No edits yet</li>}
+        {redoStack.length > 0 && (
+          <li
+            data-testid="history-redo-hint"
+            className="px-2 py-0.5 text-ink/40 italic border-t border-border/40"
+          >
+            {redoStack.length} redo step{redoStack.length !== 1 ? 's' : ''} available
+          </li>
+        )}
       </ul>
     </Section>
   );

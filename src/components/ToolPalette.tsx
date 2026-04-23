@@ -1,4 +1,4 @@
-import { Pencil, Eraser, PaintBucket, Pipette, Minus, Square, SquareDashed, BoxSelect, Wand2, Circle, Lasso } from 'lucide-react';
+import { Pencil, Eraser, PaintBucket, Pipette, Minus, Square, SquareDashed, BoxSelect, Wand2, Circle, Lasso, Palette, Type, Crop } from 'lucide-react';
 import type { ToolId } from '../store/editor';
 import { useEditorStore } from '../store/editor';
 import clsx from 'clsx';
@@ -15,13 +15,16 @@ const ENTRIES: { id: ToolId; icon: React.ComponentType<{ size?: number }>; label
   { id: 'line', icon: Minus, label: 'Line', shortcut: 'L' },
   { id: 'rect', icon: SquareDashed, label: 'Rectangle', shortcut: 'U' },
   { id: 'rectfill', icon: Square, label: 'Filled Rect', shortcut: '⇧U' },
+  { id: 'gradient', icon: Palette, label: 'Gradient', shortcut: 'D' },
+  { id: 'text', icon: Type, label: 'Text', shortcut: 'T' },
+  { id: 'slice', icon: Crop, label: 'Slice', shortcut: 'S', sep: true },
 ];
 
 export function ToolPalette() {
   const tool = useEditorStore((s) => s.tool);
   const setTool = useEditorStore((s) => s.setTool);
   return (
-    <div className="w-11 shrink-0 border-r border-border bg-panel flex flex-col items-center py-1 gap-0.5" data-testid="tool-palette">
+    <div className="w-11 shrink-0 border-r border-border bg-panel flex flex-col items-center py-1 gap-0.5 min-h-0 overflow-y-auto" data-testid="tool-palette">
       {ENTRIES.map((t) => {
         const active = tool === t.id;
         const Icon = t.icon;

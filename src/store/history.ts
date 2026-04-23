@@ -20,7 +20,20 @@ export interface PixelPatch {
   label: string;
 }
 
-export type Patch = PixelPatch;
+// Snapshot patches cover structural edits (tileset tiles, slices, layers, regions…)
+// that don't fit the per-pixel model. The action captures before/after snapshots
+// of the affected sub-tree and provides closures to re-apply them. These patches
+// only live at runtime — undo/redo history is not persisted across reloads.
+export interface SnapshotPatch {
+  type: 'snapshot';
+  label: string;
+  undo: () => void;
+  redo: () => void;
+  // Cosmetic — counted in the history list as "size" for consistency with PixelPatch.
+  newColors: { size: number };
+}
+
+export type Patch = PixelPatch | SnapshotPatch;
 
 export interface HistoryState {
   undoStack: Patch[];
@@ -33,6 +46,11 @@ export function applyUndo(patch: Patch) {
   if (patch.type === 'pixel') {
     const { imageRef, oldColors } = patch;
     for (const [i, c] of oldColors) imageRef.data[i] = c;
+    return;
+  }
+  if (patch.type === 'snapshot') {
+    patch.undo();
+    return;
   }
 }
 
@@ -40,5 +58,10 @@ export function applyRedo(patch: Patch) {
   if (patch.type === 'pixel') {
     const { imageRef, newColors } = patch;
     for (const [i, c] of newColors) imageRef.data[i] = c;
+    return;
+  }
+  if (patch.type === 'snapshot') {
+    patch.redo();
+    return;
   }
 }

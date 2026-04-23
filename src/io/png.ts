@@ -4,7 +4,7 @@ import { newSprite } from '../model/factory';
 
 // Export sprite (current frame) to PNG blob.
 export async function exportPNG(sprite: Sprite, frame: number): Promise<Blob> {
-  const imgData = compositeFrame(sprite, frame);
+  const imgData = compositeFrame(sprite, frame, { includeReference: false });
   const canvas = document.createElement('canvas');
   canvas.width = sprite.w;
   canvas.height = sprite.h;

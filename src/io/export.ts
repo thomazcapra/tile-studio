@@ -27,20 +27,156 @@ export async function tilesetAtlasPNG(tileset: Tileset, columns: number): Promis
   return { blob, width: W, height: H };
 }
 
-// Compose the current frame of the sprite (flattened) into a PNG.
-export async function spriteFramePNG(sprite: Sprite, frame: number): Promise<Blob> {
-  const imgData = compositeFrame(sprite, frame);
+export type ImageFormat = 'png' | 'webp' | 'jpeg';
+
+const MIME_FOR_FORMAT: Record<ImageFormat, string> = {
+  png: 'image/png',
+  webp: 'image/webp',
+  jpeg: 'image/jpeg',
+};
+
+export function extFor(format: ImageFormat): string {
+  return format === 'jpeg' ? 'jpg' : format;
+}
+
+// Compose the current frame of the sprite (flattened) into a PNG/WebP/JPEG.
+// JPEG can't hold transparency — pixels with alpha < 255 are alpha-composited
+// onto `background` (default white) before encoding.
+export async function spriteFrameImage(
+  sprite: Sprite,
+  frame: number,
+  format: ImageFormat = 'png',
+  quality?: number,
+  background: number = 0xffffffff,
+  tileClockMs: number = 0,
+): Promise<Blob> {
+  const imgData = compositeFrame(sprite, frame, { includeReference: false, tileClockMs });
   const c = document.createElement('canvas');
   c.width = sprite.w;
   c.height = sprite.h;
-  c.getContext('2d')!.putImageData(imgData, 0, 0);
-  return canvasBlob(c);
+  const ctx = c.getContext('2d')!;
+  if (format === 'jpeg') {
+    // Flatten onto background — JPEG can't store alpha.
+    const br = background & 0xff, bg = (background >>> 8) & 0xff, bb = (background >>> 16) & 0xff;
+    ctx.fillStyle = `rgb(${br},${bg},${bb})`;
+    ctx.fillRect(0, 0, c.width, c.height);
+  }
+  ctx.putImageData(imgData, 0, 0);
+  return canvasBlob(c, format, quality);
 }
 
-function canvasBlob(c: HTMLCanvasElement): Promise<Blob> {
+// Backwards compat: many call sites still want a PNG.
+export function spriteFramePNG(sprite: Sprite, frame: number): Promise<Blob> {
+  return spriteFrameImage(sprite, frame, 'png');
+}
+
+function canvasBlob(c: HTMLCanvasElement, format: ImageFormat = 'png', quality?: number): Promise<Blob> {
   return new Promise((resolve, reject) => {
-    c.toBlob((b) => (b ? resolve(b) : reject(new Error('toBlob failed'))), 'image/png');
+    c.toBlob(
+      (b) => (b ? resolve(b) : reject(new Error(`toBlob(${format}) failed`))),
+      MIME_FOR_FORMAT[format],
+      quality,
+    );
   });
+}
+
+// ---------- Sequence exports ----------
+
+export interface SequenceOptions {
+  format: ImageFormat;
+  filenameBase: string;
+  digits?: number; // e.g. 3 → 000, 001
+  quality?: number;
+  background?: number;
+}
+
+// Render every frame of the sprite as its own image file.
+export async function spriteFrameSequence(sprite: Sprite, opts: SequenceOptions): Promise<GeneratedFile[]> {
+  const digits = Math.max(1, opts.digits ?? String(sprite.frames.length - 1).length);
+  const out: GeneratedFile[] = [];
+  for (let i = 0; i < sprite.frames.length; i++) {
+    const blob = await spriteFrameImage(sprite, i, opts.format, opts.quality, opts.background);
+    const suffix = String(i).padStart(digits, '0');
+    out.push({ name: `${opts.filenameBase}_${suffix}.${extFor(opts.format)}`, blob });
+  }
+  return out;
+}
+
+// Pack every frame into a horizontal sprite-sheet strip (or grid).
+export async function spriteSheetStrip(
+  sprite: Sprite,
+  cols: number,
+  opts: { format?: ImageFormat; quality?: number; background?: number } = {}
+): Promise<{ blob: Blob; width: number; height: number; cols: number; rows: number }> {
+  const fmt = opts.format ?? 'png';
+  const n = sprite.frames.length;
+  const c = Math.max(1, Math.min(cols, n));
+  const rows = Math.ceil(n / c);
+  const W = c * sprite.w;
+  const H = rows * sprite.h;
+  const canvas = document.createElement('canvas');
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext('2d')!;
+  if (fmt === 'jpeg') {
+    const bg = opts.background ?? 0xffffffff;
+    const br = bg & 0xff, bgn = (bg >>> 8) & 0xff, bb = (bg >>> 16) & 0xff;
+    ctx.fillStyle = `rgb(${br},${bgn},${bb})`;
+    ctx.fillRect(0, 0, W, H);
+  }
+  for (let i = 0; i < n; i++) {
+    const imgData = compositeFrame(sprite, i, { includeReference: false });
+    const x = (i % c) * sprite.w;
+    const y = Math.floor(i / c) * sprite.h;
+    ctx.putImageData(imgData, x, y);
+  }
+  const blob = await canvasBlob(canvas, fmt, opts.quality);
+  return { blob, width: W, height: H, cols: c, rows };
+}
+
+// Sprite-sheet + JSON metadata ("Aseprite JSON Hash" flavor for engines like
+// Phaser / PixiJS).
+export async function spriteSheetWithMeta(
+  sprite: Sprite,
+  cols: number,
+  opts: { format?: ImageFormat; filenameBase: string; layout?: 'array' | 'hash'; quality?: number; background?: number }
+): Promise<GeneratedFile[]> {
+  const sheet = await spriteSheetStrip(sprite, cols, {
+    format: opts.format,
+    quality: opts.quality,
+    background: opts.background,
+  });
+  const imgFile = `${opts.filenameBase}.${extFor(opts.format ?? 'png')}`;
+  const frames = sprite.frames.map((f, i) => ({
+    filename: `${opts.filenameBase}_${i}`,
+    frame: {
+      x: (i % sheet.cols) * sprite.w,
+      y: Math.floor(i / sheet.cols) * sprite.h,
+      w: sprite.w,
+      h: sprite.h,
+    },
+    rotated: false,
+    trimmed: false,
+    spriteSourceSize: { x: 0, y: 0, w: sprite.w, h: sprite.h },
+    sourceSize: { w: sprite.w, h: sprite.h },
+    duration: f.duration,
+  }));
+  const meta = {
+    app: 'https://tilestudio.local',
+    version: '0.1.0',
+    image: imgFile,
+    format: 'RGBA8888',
+    size: { w: sheet.width, h: sheet.height },
+    scale: '1',
+    frameTags: (sprite.tags ?? []).map((t) => ({ name: t.name, from: t.from, to: t.to, direction: t.direction })),
+    layers: sprite.layers.map((l) => ({ name: l.name, opacity: l.opacity, blendMode: (l as { blendMode?: string }).blendMode ?? 'normal' })),
+  };
+  const json = opts.layout === 'hash'
+    ? { frames: Object.fromEntries(frames.map((f) => [f.filename, f])), meta }
+    : { frames, meta };
+  return [
+    { name: imgFile, blob: sheet.blob },
+    { name: `${opts.filenameBase}.json`, blob: jsonBlob(json) },
+  ];
 }
 
 // ---------- JSON emitters ----------

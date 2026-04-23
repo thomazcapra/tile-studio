@@ -16,6 +16,8 @@ import { TilesetPropertiesDialog } from './TilesetPropertiesDialog';
 import { ResizeCanvasDialog } from './ResizeCanvasDialog';
 import { PaletteEditorDialog } from './PaletteEditorDialog';
 import { SpriteSizeDialog } from './SpriteSizeDialog';
+import { ImportSpriteSheetDialog } from './ImportSpriteSheetDialog';
+import { PreferencesDialog } from './PreferencesDialog';
 
 interface MenuItem {
   label: string;
@@ -25,6 +27,56 @@ interface MenuItem {
   sep?: boolean;
   check?: boolean;
   testId?: string;
+}
+
+interface MenuProps {
+  id: string;
+  label: string;
+  items: MenuItem[];
+  openMenu: string | null;
+  setOpenMenu: (id: string | null) => void;
+}
+
+function Menu({ id, label, items, openMenu, setOpenMenu }: MenuProps) {
+  const isOpen = openMenu === id;
+  return (
+    <div className="relative" onMouseEnter={() => openMenu && setOpenMenu(id)}>
+      <button
+        data-testid={`menu-${id}`}
+        onClick={() => setOpenMenu(isOpen ? null : id)}
+        className={clsx(
+          'px-2.5 h-7 text-[12px] rounded-md transition-colors',
+          isOpen ? 'bg-panel2 text-white' : 'text-ink/80 hover:bg-panel2 hover:text-white'
+        )}
+      >
+        {label}
+      </button>
+      {isOpen && (
+        <div className="absolute left-0 top-full mt-0.5 min-w-[220px] rounded-md border border-border bg-panel2 shadow-2xl py-1 z-40">
+          {items.map((it, i) => it.sep ? (
+            <div key={`sep-${i}`} className="h-px bg-border my-1" />
+          ) : (
+            <button
+              key={i}
+              data-testid={it.testId}
+              disabled={it.disabled}
+              onClick={() => { it.onClick?.(); setOpenMenu(null); }}
+              className={clsx(
+                'w-full flex items-center gap-2 px-2.5 py-1 text-left text-[12px]',
+                it.disabled
+                  ? 'text-ink/35 cursor-not-allowed'
+                  : 'text-ink/85 hover:text-white hover:bg-panel'
+              )}
+            >
+              <span className="w-4 shrink-0 text-accent">{it.check ? '✓' : ''}</span>
+              <span className="flex-1">{it.label}</span>
+              {it.shortcut && <span className="text-ink/40 font-mono text-[10px]">{it.shortcut}</span>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function MenuBar() {
@@ -41,8 +93,12 @@ export function MenuBar() {
   const [resizeOpen, setResizeOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [spriteSizeOpen, setSpriteSizeOpen] = useState(false);
+  const [importSheetOpen, setImportSheetOpen] = useState(false);
+  const [prefsOpen, setPrefsOpen] = useState(false);
 
   const sprite = useEditorStore((s) => s.sprite);
+  const customBrush = useEditorStore((s) => s.customBrush);
+  const distractionFree = useEditorStore((s) => s.distractionFree);
   const currentLayerId = useEditorStore((s) => s.currentLayerId);
   const selectedTile = useEditorStore((s) => s.selectedTile);
   const tiledMode = useEditorStore((s) => s.tiledMode);
@@ -63,6 +119,7 @@ export function MenuBar() {
   const convertTilemapToRaster = useEditorStore((s) => s.convertTilemapToRaster);
   const deleteLayer = useEditorStore((s) => s.deleteLayer);
   const addRasterLayer = useEditorStore((s) => s.addRasterLayer);
+  const addGroupLayer = useEditorStore((s) => s.addGroupLayer);
   const duplicateLayerAction = useEditorStore((s) => s.duplicateLayer);
   const moveLayerUp = useEditorStore((s) => s.moveLayerUp);
   const moveLayerDown = useEditorStore((s) => s.moveLayerDown);
@@ -100,12 +157,16 @@ export function MenuBar() {
     };
   }, []);
 
-  // Global action bus (keyboard shortcuts dispatch these).
+  // Global action bus (keyboard shortcuts + command palette dispatch these).
   useEffect(() => {
     function handler(e: Event) {
       const action = (e as CustomEvent<string>).detail;
       if (action === 'save-project') onSaveProject();
       else if (action === 'open-project') onOpenProject();
+      else if (action === 'file-new') onNew();
+      else if (action === 'open-export') setExportOpen(true);
+      else if (action === 'open-preferences') setPrefsOpen(true);
+      else if (action === 'open-palette-editor') setPaletteOpen(true);
     }
     window.addEventListener('tile-studio:action', handler);
     return () => window.removeEventListener('tile-studio:action', handler);
@@ -185,6 +246,7 @@ export function MenuBar() {
     { label: 'Open Project…', shortcut: 'Ctrl+Shift+O', onClick: onOpenProject, testId: 'm-file-open-project' },
     { sep: true, label: '' },
     { label: 'Import PNG…', shortcut: 'Ctrl+O', onClick: onOpen, testId: 'm-file-open' },
+    { label: 'Import Sprite Sheet…', onClick: () => setImportSheetOpen(true), testId: 'm-file-import-sheet' },
     { label: 'Export…', shortcut: 'Ctrl+Shift+E', onClick: () => setExportOpen(true), testId: 'm-file-export' },
     { sep: true, label: '' },
     { label: 'Discard Autosave', onClick: onDiscardAutosave, testId: 'm-file-discard-autosave' },
@@ -192,6 +254,8 @@ export function MenuBar() {
   const editMenu: MenuItem[] = [
     { label: 'Undo', shortcut: 'Ctrl+Z', onClick: undo, disabled: !canUndo, testId: 'm-edit-undo' },
     { label: 'Redo', shortcut: 'Ctrl+Shift+Z', onClick: redo, disabled: !canRedo, testId: 'm-edit-redo' },
+    { sep: true, label: '' },
+    { label: 'Preferences…', onClick: () => setPrefsOpen(true), testId: 'm-edit-prefs' },
   ];
   const viewMenu: MenuItem[] = [
     { label: 'Tiled Mode: None', check: tiledMode === 'none', onClick: () => setTiledMode('none'), testId: 'm-view-tiled-none' },
@@ -209,6 +273,9 @@ export function MenuBar() {
     { sep: true, label: '' },
     { label: 'Snap to Grid', check: snapToGrid, onClick: toggleSnapToGrid, testId: 'm-view-snap' },
     { sep: true, label: '' },
+    { label: 'Clear Guides', onClick: () => useEditorStore.getState().clearGuides(), testId: 'm-view-clear-guides' },
+    { label: 'Distraction Free', shortcut: 'Tab', check: distractionFree, onClick: () => useEditorStore.getState().toggleDistractionFree(), testId: 'm-view-distraction' },
+    { sep: true, label: '' },
     { label: 'Fit to Window', shortcut: '0', onClick: () => {
       const vp = document.querySelector<HTMLElement>('[data-testid="viewport-container"]');
       if (vp) useEditorStore.getState().resetView(vp.clientWidth, vp.clientHeight);
@@ -219,9 +286,22 @@ export function MenuBar() {
     { label: 'Zoom 800%', onClick: () => useEditorStore.getState().setZoom(8), testId: 'm-view-zoom-800' },
     { label: 'Zoom 1600%', onClick: () => useEditorStore.getState().setZoom(16), testId: 'm-view-zoom-1600' },
   ];
+  async function onNewReferenceLayer() {
+    const f = await pickFile('image/*');
+    if (!f) return;
+    try {
+      const img = await decodePNG(f);
+      const id = useEditorStore.getState().addReferenceLayer(img, f.name.replace(/\.[^.]+$/, ''));
+      if (id) toast.success(`Reference layer added from ${f.name}`);
+    } catch (err) {
+      toast.error(`Reference failed: ${(err as Error).message}`);
+    }
+  }
   const layerMenu: MenuItem[] = [
     { label: 'New Raster Layer', onClick: () => { addRasterLayer(); toast('New raster layer'); }, testId: 'm-layer-new-raster' },
     { label: 'New Tilemap Layer…', onClick: () => setNewTmlOpen(true), testId: 'm-layer-new-tilemap' },
+    { label: 'New Group', onClick: () => { addGroupLayer(); toast('New group'); }, testId: 'm-layer-new-group' },
+    { label: 'New Reference Layer…', onClick: onNewReferenceLayer, testId: 'm-layer-new-ref' },
     { label: 'Duplicate Layer', onClick: () => { if (currentLayer) { duplicateLayerAction(currentLayer.id); toast('Duplicated layer'); } }, disabled: !currentLayer, testId: 'm-layer-duplicate' },
     { sep: true, label: '' },
     { label: 'Layer Properties…', shortcut: 'Ctrl+L', onClick: () => setLayerPropsOpen(true), disabled: !currentLayer, testId: 'm-layer-props' },
@@ -250,6 +330,12 @@ export function MenuBar() {
   const flipSelectionContent = useEditorStore((s) => s.flipSelectionContent);
   const rotateSelection180 = useEditorStore((s) => s.rotateSelection180);
 
+  const tilemapRegion = useEditorStore((s) => s.tilemapRegion);
+  const flipTilemapRegion = useEditorStore((s) => s.flipTilemapRegion);
+  const rotateTilemapRegion180 = useEditorStore((s) => s.rotateTilemapRegion180);
+  const clearTilemapRegionContent = useEditorStore((s) => s.clearTilemapRegionContent);
+  const setTilemapRegion = useEditorStore((s) => s.setTilemapRegion);
+
   const spriteMenu: MenuItem[] = [
     { label: 'Canvas Size…', onClick: () => setResizeOpen(true), testId: 'm-sprite-canvas-size' },
     { label: 'Sprite Size (Scale)…', onClick: () => setSpriteSizeOpen(true), testId: 'm-sprite-size' },
@@ -276,6 +362,17 @@ export function MenuBar() {
     { label: 'Flip Selection Horizontal', onClick: () => { flipSelectionContent('h'); }, disabled: !selection, testId: 'm-select-flip-h' },
     { label: 'Flip Selection Vertical', onClick: () => { flipSelectionContent('v'); }, disabled: !selection, testId: 'm-select-flip-v' },
     { label: 'Rotate Selection 180°', onClick: () => { rotateSelection180(); }, disabled: !selection, testId: 'm-select-rot-180' },
+    { label: 'Rotate Selection 90° CW', onClick: () => { useEditorStore.getState().rotateSelectionContent(90); }, disabled: !selection, testId: 'm-select-rot-90' },
+    { label: 'Scale Selection 2×', onClick: () => { useEditorStore.getState().scaleSelectionContent(2, 2); }, disabled: !selection, testId: 'm-select-scale-2x' },
+    { label: 'Scale Selection ½', onClick: () => { useEditorStore.getState().scaleSelectionContent(0.5, 0.5); }, disabled: !selection, testId: 'm-select-scale-half' },
+    { label: 'Capture as Custom Brush', onClick: () => { useEditorStore.getState().captureCustomBrush(); toast('Custom brush captured'); }, disabled: !selection && !clipboard, testId: 'm-select-capture-brush' },
+    { label: 'Clear Custom Brush', onClick: () => { useEditorStore.getState().clearCustomBrush(); }, disabled: !customBrush, testId: 'm-select-clear-brush' },
+    { sep: true, label: '' },
+    { label: 'Flip Tile Region Horizontal', onClick: () => { flipTilemapRegion('h'); }, disabled: !tilemapRegion, testId: 'm-tmap-flip-h' },
+    { label: 'Flip Tile Region Vertical', onClick: () => { flipTilemapRegion('v'); }, disabled: !tilemapRegion, testId: 'm-tmap-flip-v' },
+    { label: 'Rotate Tile Region 180°', onClick: () => { rotateTilemapRegion180(); }, disabled: !tilemapRegion, testId: 'm-tmap-rot-180' },
+    { label: 'Clear Tile Region', onClick: () => { clearTilemapRegionContent(); }, disabled: !tilemapRegion, testId: 'm-tmap-clear' },
+    { label: 'Deselect Tile Region', onClick: () => { setTilemapRegion(null); }, disabled: !tilemapRegion, testId: 'm-tmap-deselect' },
   ];
 
   const frameMenu: MenuItem[] = [
@@ -297,48 +394,6 @@ export function MenuBar() {
     { label: 'Palette Editor…', onClick: () => setPaletteOpen(true), testId: 'm-ts-palette' },
   ];
 
-  function Menu({ id, label, items }: { id: string; label: string; items: MenuItem[] }) {
-    const isOpen = openMenu === id;
-    return (
-      <div className="relative" onMouseEnter={() => openMenu && setOpenMenu(id)}>
-        <button
-          data-testid={`menu-${id}`}
-          onClick={() => setOpenMenu(isOpen ? null : id)}
-          className={clsx(
-            'px-2.5 h-7 text-[12px] rounded-md transition-colors',
-            isOpen ? 'bg-panel2 text-white' : 'text-ink/80 hover:bg-panel2 hover:text-white'
-          )}
-        >
-          {label}
-        </button>
-        {isOpen && (
-          <div className="absolute left-0 top-full mt-0.5 min-w-[220px] rounded-md border border-border bg-panel2 shadow-2xl py-1 z-40">
-            {items.map((it, i) => it.sep ? (
-              <div key={`sep-${i}`} className="h-px bg-border my-1" />
-            ) : (
-              <button
-                key={i}
-                data-testid={it.testId}
-                disabled={it.disabled}
-                onClick={() => { it.onClick?.(); setOpenMenu(null); }}
-                className={clsx(
-                  'w-full flex items-center gap-2 px-2.5 py-1 text-left text-[12px]',
-                  it.disabled
-                    ? 'text-ink/35 cursor-not-allowed'
-                    : 'text-ink/85 hover:text-white hover:bg-panel'
-                )}
-              >
-                <span className="w-4 shrink-0 text-accent">{it.check ? '✓' : ''}</span>
-                <span className="flex-1">{it.label}</span>
-                {it.shortcut && <span className="text-ink/40 font-mono text-[10px]">{it.shortcut}</span>}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-    );
-  }
-
   return (
     <div
       ref={barRef}
@@ -349,14 +404,14 @@ export function MenuBar() {
         <span className="w-2 h-2 bg-accent rounded-sm" />
         Tile Studio
       </span>
-      <Menu id="file" label="File" items={fileMenu} />
-      <Menu id="edit" label="Edit" items={editMenu} />
-      <Menu id="select" label="Select" items={selectMenu} />
-      <Menu id="view" label="View" items={viewMenu} />
-      <Menu id="sprite" label="Sprite" items={spriteMenu} />
-      <Menu id="layer" label="Layer" items={layerMenu} />
-      <Menu id="frame" label="Frame" items={frameMenu} />
-      <Menu id="tileset" label="Tileset" items={tilesetMenu} />
+      <Menu id="file" label="File" items={fileMenu} openMenu={openMenu} setOpenMenu={setOpenMenu} />
+      <Menu id="edit" label="Edit" items={editMenu} openMenu={openMenu} setOpenMenu={setOpenMenu} />
+      <Menu id="select" label="Select" items={selectMenu} openMenu={openMenu} setOpenMenu={setOpenMenu} />
+      <Menu id="view" label="View" items={viewMenu} openMenu={openMenu} setOpenMenu={setOpenMenu} />
+      <Menu id="sprite" label="Sprite" items={spriteMenu} openMenu={openMenu} setOpenMenu={setOpenMenu} />
+      <Menu id="layer" label="Layer" items={layerMenu} openMenu={openMenu} setOpenMenu={setOpenMenu} />
+      <Menu id="frame" label="Frame" items={frameMenu} openMenu={openMenu} setOpenMenu={setOpenMenu} />
+      <Menu id="tileset" label="Tileset" items={tilesetMenu} openMenu={openMenu} setOpenMenu={setOpenMenu} />
       <ExportDialog open={exportOpen} onClose={() => setExportOpen(false)} />
       <GenerateTilesetDialog open={generateOpen} onClose={() => setGenerateOpen(false)} />
       <NewTilesetDialog open={newTsOpen} onClose={() => setNewTsOpen(false)} />
@@ -367,6 +422,8 @@ export function MenuBar() {
       <ResizeCanvasDialog open={resizeOpen} onClose={() => setResizeOpen(false)} />
       <PaletteEditorDialog open={paletteOpen} onClose={() => setPaletteOpen(false)} />
       <SpriteSizeDialog open={spriteSizeOpen} onClose={() => setSpriteSizeOpen(false)} />
+      <ImportSpriteSheetDialog open={importSheetOpen} onClose={() => setImportSheetOpen(false)} />
+      <PreferencesDialog open={prefsOpen} onClose={() => setPrefsOpen(false)} />
     </div>
   );
 }

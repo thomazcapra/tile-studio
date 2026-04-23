@@ -1,9 +1,37 @@
 import { create } from 'zustand';
-import type { AnyImage, BlendMode, Cel, ImageRGBA, Layer, RasterLayer, Sprite, Tag, TagDirection, TilemapLayer, Tileset } from '../model/types';
+import type { AnyImage, BlendMode, Cel, GroupLayer, ImageRGBA, Layer, RasterLayer, ReferenceLayer, Slice, SliceKey, Sprite, Tag, TagDirection, TilemapLayer, Tileset } from '../model/types';
+import { TILE_FLIP_X, TILE_FLIP_Y, EMPTY_TILE_WORD, makeTileWord, readTilesetIndex, tileFlags } from '../model/types';
 import { newSprite, newTilesetWithTiles, newEmptyTile, nextId } from '../model/factory';
 import { applyRedo, applyUndo, MAX_HISTORY, type Patch } from './history';
 import { generateTilesetFromImage, type GenerateOptions, type GenerateResult } from '../tileset/generate';
 import { flipAny, rotate180, rotate90, scaleRGBANearest } from '../image/transform';
+
+// Remap tilemap cel words across every cel that references `tilesetId`.
+// mapFn returns the new 0-based tileset index, or -1 to clear that word.
+// Flip flags are preserved (and optionally transformed via flagsMap).
+function remapTilemapCels(
+  sprite: Sprite,
+  tilesetId: string,
+  mapFn: (oldIdx: number) => number,
+): Cel[] {
+  return sprite.cels.map((c) => {
+    if (c.image.colorMode !== 'tilemap') return c;
+    const layer = sprite.layers.find((l) => l.id === c.layerId);
+    if (!layer || layer.type !== 'tilemap' || layer.tilesetId !== tilesetId) return c;
+    const src = c.image.data;
+    const dst = new Uint32Array(src.length);
+    for (let i = 0; i < src.length; i++) {
+      const w = src[i];
+      if (w === 0) { dst[i] = 0; continue; }
+      const oldIdx = readTilesetIndex(w);
+      if (oldIdx < 0) { dst[i] = 0; continue; }
+      const newIdx = mapFn(oldIdx);
+      if (newIdx < 0) { dst[i] = 0; continue; }
+      dst[i] = makeTileWord(newIdx, tileFlags(w));
+    }
+    return { ...c, image: { ...c.image, data: dst } };
+  });
+}
 
 function maskToSelection(mask: Uint8Array, w: number, h: number): SelectionState | null {
   let minX = Infinity, minY = Infinity, maxX = -1, maxY = -1;
@@ -93,7 +121,7 @@ function mergeBlend(dst: number, src: number, mode: BlendMode, opacity: number):
 }
 
 export type EditorMode = 'tilemap' | 'tile' | 'raster';
-export type ToolId = 'pencil' | 'eraser' | 'bucket' | 'eyedropper' | 'line' | 'rect' | 'rectfill' | 'pan' | 'select-rect' | 'select-ellipse' | 'select-lasso' | 'select-wand';
+export type ToolId = 'pencil' | 'eraser' | 'bucket' | 'eyedropper' | 'line' | 'rect' | 'rectfill' | 'pan' | 'select-rect' | 'select-ellipse' | 'select-lasso' | 'select-wand' | 'gradient' | 'text' | 'slice';
 export type SelectionMode = 'replace' | 'add' | 'subtract' | 'intersect';
 
 export interface SelectionState {
@@ -108,6 +136,17 @@ export interface ClipboardBuffer {
   h: number;
   data: Uint32Array;   // RGBA pixels extracted from the source
   mask: Uint8Array;    // 1 = opaque in the clipboard (matches the original selection shape)
+}
+
+// Tilemap-region selection — expressed in tile coordinates (not pixels).
+// Used by the tilemap layer tools for region ops (flip/rotate/nudge/fill).
+export interface TilemapRegion {
+  x: number; y: number; w: number; h: number; // all in tiles
+}
+
+export interface TilemapClipboard {
+  w: number; h: number;
+  data: Uint32Array; // tile words
 }
 export type TiledMode = 'none' | 'x' | 'y' | 'both';
 export type Anchor = 'nw' | 'n' | 'ne' | 'w' | 'c' | 'e' | 'sw' | 's' | 'se';
@@ -169,6 +208,10 @@ export interface EditorState {
   selection: SelectionState | null;
   clipboard: ClipboardBuffer | null;
 
+  // Tilemap region (tile-space) — independent from pixel selection.
+  tilemapRegion: TilemapRegion | null;
+  tilemapClipboard: TilemapClipboard | null;
+
   tool: ToolId;
   previousTool: ToolId;
   primary: number;
@@ -179,6 +222,7 @@ export interface EditorState {
   pixelPerfect: boolean;    // suppress double-pixels on diagonals
   symmetryMode: 'none' | 'h' | 'v' | 'both';
   snapToGrid: boolean;
+  wandTolerance: number;    // 0..255 — magic-wand color distance threshold
 
   undoStack: Patch[];
   redoStack: Patch[];
@@ -200,6 +244,7 @@ export interface EditorState {
   togglePixelPerfect: () => void;
   setSymmetryMode: (m: 'none' | 'h' | 'v' | 'both') => void;
   toggleSnapToGrid: () => void;
+  setWandTolerance: (n: number) => void;
 
   activeCel: () => Cel | null;
   activeImage: () => ImageRGBA | null;
@@ -212,6 +257,36 @@ export interface EditorState {
   duplicateTile: (tilesetId: string, index: number) => void;
   selectTile: (tilesetId: string | null, index?: number) => void;
   renameTileset: (tilesetId: string, name: string) => void;
+  // Reorder a tile within a tileset and remap ALL tilemap cel words that reference it.
+  reorderTile: (tilesetId: string, from: number, to: number) => boolean;
+
+  // Apply an auto-tile rule to the current tilemap cel. `filled` is derived from
+  // the existing cel: any non-empty tile word counts as "filled".
+  applyAutoTile: (layerId: string, map: Record<number, number>) => boolean;
+
+  // Global animation clock — ticked by the RAF hook when any animated tile exists.
+  // Compositor reads this to pick which frame of each animated tile to blit.
+  tileClockMs: number;
+  setTileClock: (ms: number) => void;
+
+  // Per-tile animation: attach/detach a frame sequence.
+  setTileAnimation: (tilesetId: string, tileIdx: number, frames: import('../model/types').ImageRGBA[], frameMs: number) => boolean;
+  clearTileAnimation: (tilesetId: string, tileIdx: number) => boolean;
+
+  // Distraction-free / fullscreen canvas mode (hides side panels).
+  distractionFree: boolean;
+  toggleDistractionFree: () => void;
+
+  // Tilemap region selection & transforms (tile-space ops).
+  setTilemapRegion: (r: TilemapRegion | null) => void;
+  fillTilemapRegion: (tileIdx: number, flags?: number) => boolean;
+  clearTilemapRegionContent: () => boolean;
+  flipTilemapRegion: (axis: 'h' | 'v') => boolean;
+  rotateTilemapRegion180: () => boolean;
+  nudgeTilemapRegion: (dx: number, dy: number) => boolean;
+  copyTilemapRegion: () => boolean;
+  cutTilemapRegion: () => boolean;
+  pasteTilemapRegion: () => boolean;
 
   // Tilemap layer ops.
   addTilemapLayer: (tilesetId: string, tilesW: number, tilesH: number, name?: string) => string;
@@ -270,11 +345,29 @@ export interface EditorState {
   nudgeSelection: (dx: number, dy: number) => boolean;
   flipSelectionContent: (axis: 'h' | 'v') => boolean;
   rotateSelection180: () => boolean;
+  rotateSelectionContent: (angleDeg: number) => boolean;
+  scaleSelectionContent: (sx: number, sy: number) => boolean;
+
+  // Custom brushes captured from a selection — stamped by the pencil when set.
+  customBrush: { w: number; h: number; data: Uint32Array; mask: Uint8Array } | null;
+  captureCustomBrush: () => boolean;
+  clearCustomBrush: () => void;
+
+  // Undo / redo history seek: pop or replay patches until reaching the given index.
+  seekHistory: (absoluteIndex: number) => boolean;
+
+  // Guides (overlay lines).
+  guides: Array<{ id: string; axis: 'h' | 'v'; position: number }>;
+  addGuide: (axis: 'h' | 'v', position: number) => string;
+  moveGuide: (id: string, position: number) => void;
+  deleteGuide: (id: string) => void;
+  clearGuides: () => void;
 
   // Layer + tileset editing.
   renameLayer: (layerId: string, name: string) => void;
   setLayerOpacity: (layerId: string, opacity: number) => void;
   setLayerVisible: (layerId: string, visible: boolean) => void;
+  setLayerLocked: (layerId: string, locked: boolean) => void;
   setLayerBlendMode: (layerId: string, mode: BlendMode) => void;
   setTilemapLayerTileset: (layerId: string, tilesetId: string) => void;
   deleteLayer: (layerId: string) => void;
@@ -284,8 +377,27 @@ export interface EditorState {
   moveLayerUp: (layerId: string) => void;
   moveLayerDown: (layerId: string) => void;
   mergeLayerDown: (layerId: string) => boolean;
+  // Layer groups.
+  addGroupLayer: (name?: string) => string;
+  setLayerParent: (layerId: string, parentId: string | null) => void;
+  toggleGroupExpanded: (groupId: string) => void;
+
+  // Reference layer: non-exported tracing guide.
+  addReferenceLayer: (img: ImageRGBA, name?: string) => string;
+
+  // Linked cels — cels sharing a linkedGroupId all reference the same image.
+  linkCels: (celIds: string[]) => boolean;
+  unlinkCel: (celId: string) => boolean;
+
+  // Slices.
+  selectedSliceId: string | null;
+  addSlice: (bounds: { x: number; y: number; w: number; h: number }, name?: string) => string;
+  deleteSlice: (sliceId: string) => void;
+  renameSlice: (sliceId: string, name: string) => void;
+  updateSliceKey: (sliceId: string, frame: number, patch: Partial<SliceKey>) => void;
+  setSliceColor: (sliceId: string, color: string) => void;
+  selectSlice: (sliceId: string | null) => void;
   setTilesetProps: (tilesetId: string, props: { name?: string }) => void;
-  convertRasterToTilemap: (layerId: string, tilesetId: string, tileW: number, tileH: number) => boolean;
   convertTilemapToRaster: (layerId: string) => boolean;
 
   // Palette ops.
@@ -344,6 +456,15 @@ export const useEditorStore = create<EditorState>((set, get) => {
     selection: null,
     clipboard: null,
 
+    tilemapRegion: null,
+    tilemapClipboard: null,
+
+    selectedSliceId: null,
+    customBrush: null,
+    guides: [],
+    tileClockMs: 0,
+    distractionFree: false,
+
     tool: 'pencil',
     previousTool: 'pencil',
     primary: 0xff000000 | 0xffffff,
@@ -353,6 +474,7 @@ export const useEditorStore = create<EditorState>((set, get) => {
     pixelPerfect: false,
     symmetryMode: 'none',
     snapToGrid: false,
+    wandTolerance: 0,
 
     undoStack: [],
     redoStack: [],
@@ -424,6 +546,7 @@ export const useEditorStore = create<EditorState>((set, get) => {
     togglePixelPerfect: () => set((s) => ({ pixelPerfect: !s.pixelPerfect })),
     setSymmetryMode: (m) => set({ symmetryMode: m }),
     toggleSnapToGrid: () => set((s) => ({ snapToGrid: !s.snapToGrid })),
+    setWandTolerance: (n) => set({ wandTolerance: Math.max(0, Math.min(255, n | 0)) }),
 
     activeCel: () => {
       const s = get();
@@ -477,23 +600,43 @@ export const useEditorStore = create<EditorState>((set, get) => {
       };
     }),
 
-    deleteTile: (tilesetId, index) => set((s) => {
-      const tilesets = s.sprite.tilesets.map((t): Tileset => {
+    deleteTile: (tilesetId, index) => {
+      const s = get();
+      const prevTilesets = s.sprite.tilesets;
+      const prevCels = s.sprite.cels;
+      const prevSelected = s.selectedTile;
+      const tilesets = prevTilesets.map((t): Tileset => {
         if (t.id !== tilesetId) return t;
         const tiles = t.tiles.slice();
         tiles.splice(index, 1);
-        return { ...t, tiles };
+        return { ...t, tiles, hash: new Map() };
       });
-      const selectedTile = s.selectedTile && s.selectedTile.tilesetId === tilesetId && s.selectedTile.index >= index
+      // Remap cels: old index === deleted → 0 (empty); old > deleted → shifts down by 1.
+      const cels = remapTilemapCels({ ...s.sprite, tilesets }, tilesetId, (old) => {
+        if (old === index) return -1;
+        return old > index ? old - 1 : old;
+      });
+      const selectedTile = prevSelected && prevSelected.tilesetId === tilesetId && prevSelected.index >= index
         ? (tilesets.find((t) => t.id === tilesetId)!.tiles.length > 0
-            ? { tilesetId, index: Math.max(0, s.selectedTile.index - (s.selectedTile.index === index ? 0 : 1)) }
+            ? { tilesetId, index: Math.max(0, prevSelected.index - (prevSelected.index === index ? 0 : 1)) }
             : null)
-        : s.selectedTile;
-      return { sprite: { ...s.sprite, tilesets }, selectedTile, dirtyTick: s.dirtyTick + 1 };
-    }),
+        : prevSelected;
+      set({ sprite: { ...s.sprite, tilesets, cels }, selectedTile, dirtyTick: s.dirtyTick + 1 });
+      get().pushPatch({
+        type: 'snapshot',
+        label: 'Delete Tile',
+        newColors: { size: 1 },
+        undo: () => set((st) => ({ sprite: { ...st.sprite, tilesets: prevTilesets, cels: prevCels }, selectedTile: prevSelected, dirtyTick: st.dirtyTick + 1 })),
+        redo: () => set((st) => ({ sprite: { ...st.sprite, tilesets, cels }, selectedTile, dirtyTick: st.dirtyTick + 1 })),
+      });
+    },
 
-    duplicateTile: (tilesetId, index) => set((s) => {
-      const tilesets = s.sprite.tilesets.map((t): Tileset => {
+    duplicateTile: (tilesetId, index) => {
+      const s = get();
+      const prevTilesets = s.sprite.tilesets;
+      const prevCels = s.sprite.cels;
+      const prevSelected = s.selectedTile;
+      const tilesets = prevTilesets.map((t): Tileset => {
         if (t.id !== tilesetId) return t;
         const src = t.tiles[index];
         if (!src) return t;
@@ -504,14 +647,333 @@ export const useEditorStore = create<EditorState>((set, get) => {
         };
         const tiles = t.tiles.slice();
         tiles.splice(index + 1, 0, copy);
-        return { ...t, tiles };
+        return { ...t, tiles, hash: new Map() };
       });
-      return {
-        sprite: { ...s.sprite, tilesets },
-        selectedTile: { tilesetId, index: index + 1 },
-        dirtyTick: s.dirtyTick + 1,
+      // Duplicate inserts at index+1 — old tiles >= index+1 shift up by 1.
+      const cels = remapTilemapCels({ ...s.sprite, tilesets }, tilesetId, (old) => (old >= index + 1 ? old + 1 : old));
+      const selectedTile = { tilesetId, index: index + 1 };
+      set({ sprite: { ...s.sprite, tilesets, cels }, selectedTile, dirtyTick: s.dirtyTick + 1 });
+      get().pushPatch({
+        type: 'snapshot',
+        label: 'Duplicate Tile',
+        newColors: { size: 1 },
+        undo: () => set((st) => ({ sprite: { ...st.sprite, tilesets: prevTilesets, cels: prevCels }, selectedTile: prevSelected, dirtyTick: st.dirtyTick + 1 })),
+        redo: () => set((st) => ({ sprite: { ...st.sprite, tilesets, cels }, selectedTile, dirtyTick: st.dirtyTick + 1 })),
+      });
+    },
+
+    setTileClock: (ms) => set({ tileClockMs: ms, dirtyTick: get().dirtyTick + 1 }),
+
+    setTileAnimation: (tilesetId, tileIdx, frames, frameMs) => {
+      const s = get();
+      const ts = s.sprite.tilesets.find((t) => t.id === tilesetId);
+      if (!ts || tileIdx < 0 || tileIdx >= ts.tiles.length) return false;
+      if (!frames.length) return false;
+      const prevTilesets = s.sprite.tilesets;
+      const newTiles = ts.tiles.slice();
+      newTiles[tileIdx] = {
+        ...newTiles[tileIdx],
+        animation: { frames, frameMs: Math.max(20, Math.min(10_000, frameMs)) },
       };
-    }),
+      const nextTilesets = prevTilesets.map((t) => (t.id === tilesetId ? { ...t, tiles: newTiles } : t));
+      set({ sprite: { ...s.sprite, tilesets: nextTilesets }, dirtyTick: s.dirtyTick + 1 });
+      get().pushPatch({
+        type: 'snapshot',
+        label: 'Set Tile Animation',
+        newColors: { size: frames.length },
+        undo: () => set((st) => ({ sprite: { ...st.sprite, tilesets: prevTilesets }, dirtyTick: st.dirtyTick + 1 })),
+        redo: () => set((st) => ({ sprite: { ...st.sprite, tilesets: nextTilesets }, dirtyTick: st.dirtyTick + 1 })),
+      });
+      return true;
+    },
+
+    clearTileAnimation: (tilesetId, tileIdx) => {
+      const s = get();
+      const ts = s.sprite.tilesets.find((t) => t.id === tilesetId);
+      if (!ts || tileIdx < 0 || tileIdx >= ts.tiles.length) return false;
+      const prevTilesets = s.sprite.tilesets;
+      const newTiles = ts.tiles.slice();
+      const prev = newTiles[tileIdx];
+      if (!prev.animation) return false;
+      const { animation: _dropped, ...rest } = prev;
+      void _dropped;
+      newTiles[tileIdx] = rest;
+      const nextTilesets = prevTilesets.map((t) => (t.id === tilesetId ? { ...t, tiles: newTiles } : t));
+      set({ sprite: { ...s.sprite, tilesets: nextTilesets }, dirtyTick: s.dirtyTick + 1 });
+      get().pushPatch({
+        type: 'snapshot',
+        label: 'Clear Tile Animation',
+        newColors: { size: 1 },
+        undo: () => set((st) => ({ sprite: { ...st.sprite, tilesets: prevTilesets }, dirtyTick: st.dirtyTick + 1 })),
+        redo: () => set((st) => ({ sprite: { ...st.sprite, tilesets: nextTilesets }, dirtyTick: st.dirtyTick + 1 })),
+      });
+      return true;
+    },
+
+    toggleDistractionFree: () => set((st) => ({ distractionFree: !st.distractionFree })),
+
+    applyAutoTile: (layerId, map) => {
+      const s = get();
+      const layer = s.sprite.layers.find((l) => l.id === layerId);
+      if (!layer || layer.type !== 'tilemap') return false;
+      const cel = s.sprite.cels.find((c) => c.layerId === layerId && c.frame === s.currentFrame);
+      if (!cel || cel.image.colorMode !== 'tilemap') return false;
+      const { w: mw, h: mh, data } = cel.image;
+      const filled: boolean[] = new Array(mw * mh);
+      for (let i = 0; i < data.length; i++) filled[i] = data[i] !== 0;
+      const at = (x: number, y: number) => (x < 0 || y < 0 || x >= mw || y >= mh) ? false : filled[y * mw + x];
+      for (let y = 0; y < mh; y++) {
+        for (let x = 0; x < mw; x++) {
+          if (!filled[y * mw + x]) { data[y * mw + x] = 0; continue; }
+          let mask = 0;
+          if (at(x, y - 1)) mask |= 1;
+          if (at(x + 1, y)) mask |= 2;
+          if (at(x, y + 1)) mask |= 4;
+          if (at(x - 1, y)) mask |= 8;
+          const idx = map[mask] ?? map[0] ?? -1;
+          data[y * mw + x] = idx < 0 ? 0 : makeTileWord(idx);
+        }
+      }
+      set({ dirtyTick: s.dirtyTick + 1 });
+      return true;
+    },
+
+    reorderTile: (tilesetId, from, to) => {
+      const s = get();
+      const ts = s.sprite.tilesets.find((t) => t.id === tilesetId);
+      if (!ts) return false;
+      if (from === to) return false;
+      if (from < 0 || from >= ts.tiles.length) return false;
+      const prevTilesets = s.sprite.tilesets;
+      const prevCels = s.sprite.cels;
+      const prevSelected = s.selectedTile;
+      const target = Math.max(0, Math.min(ts.tiles.length - 1, to));
+      // Build permutation: order[newIdx] = oldIdx.
+      const order: number[] = [];
+      for (let i = 0; i < ts.tiles.length; i++) order.push(i);
+      const [moved] = order.splice(from, 1);
+      order.splice(target, 0, moved);
+      // Invert: oldToNew[oldIdx] = newIdx.
+      const oldToNew = new Array<number>(ts.tiles.length);
+      for (let newIdx = 0; newIdx < order.length; newIdx++) oldToNew[order[newIdx]] = newIdx;
+
+      const tilesets = prevTilesets.map((t): Tileset =>
+        t.id === tilesetId
+          ? { ...t, tiles: order.map((oldIdx) => t.tiles[oldIdx]), hash: new Map() }
+          : t
+      );
+      const cels = remapTilemapCels({ ...s.sprite, tilesets }, tilesetId, (old) => oldToNew[old]);
+      const selectedTile = prevSelected && prevSelected.tilesetId === tilesetId
+        ? { tilesetId, index: oldToNew[prevSelected.index] ?? prevSelected.index }
+        : prevSelected;
+      set({
+        sprite: { ...s.sprite, tilesets, cels },
+        selectedTile,
+        dirtyTick: s.dirtyTick + 1,
+      });
+      get().pushPatch({
+        type: 'snapshot',
+        label: 'Reorder Tile',
+        newColors: { size: 1 },
+        undo: () => set((st) => ({ sprite: { ...st.sprite, tilesets: prevTilesets, cels: prevCels }, selectedTile: prevSelected, dirtyTick: st.dirtyTick + 1 })),
+        redo: () => set((st) => ({ sprite: { ...st.sprite, tilesets, cels }, selectedTile, dirtyTick: st.dirtyTick + 1 })),
+      });
+      return true;
+    },
+
+    setTilemapRegion: (r) => set({ tilemapRegion: r }),
+
+    fillTilemapRegion: (tileIdx, flags = 0) => {
+      const s = get();
+      const r = s.tilemapRegion;
+      const cel = s.activeCel();
+      if (!r || !cel || cel.image.colorMode !== 'tilemap') return false;
+      const { w: mw, h: mh, data } = cel.image;
+      const before = new Uint32Array(data);
+      const word = tileIdx < 0 ? 0 : makeTileWord(tileIdx, flags);
+      for (let y = r.y; y < r.y + r.h; y++) {
+        if (y < 0 || y >= mh) continue;
+        for (let x = r.x; x < r.x + r.w; x++) {
+          if (x < 0 || x >= mw) continue;
+          data[y * mw + x] = word;
+        }
+      }
+      const after = new Uint32Array(data);
+      set({ dirtyTick: s.dirtyTick + 1 });
+      get().pushPatch({
+        type: 'snapshot',
+        label: tileIdx < 0 ? 'Clear Region' : 'Fill Region',
+        newColors: { size: r.w * r.h },
+        undo: () => { data.set(before); set((st) => ({ dirtyTick: st.dirtyTick + 1 })); },
+        redo: () => { data.set(after); set((st) => ({ dirtyTick: st.dirtyTick + 1 })); },
+      });
+      return true;
+    },
+
+    clearTilemapRegionContent: () => get().fillTilemapRegion(-1),
+
+    flipTilemapRegion: (axis) => {
+      const s = get();
+      const r = s.tilemapRegion;
+      const cel = s.activeCel();
+      if (!r || !cel || cel.image.colorMode !== 'tilemap') return false;
+      const { w: mw, h: mh, data } = cel.image;
+      const before = new Uint32Array(data);
+      const flipBit = axis === 'h' ? TILE_FLIP_X : TILE_FLIP_Y;
+      // Copy region into a scratch, transform, write back.
+      const buf = new Uint32Array(r.w * r.h);
+      for (let y = 0; y < r.h; y++) {
+        for (let x = 0; x < r.w; x++) {
+          const sx = r.x + x, sy = r.y + y;
+          if (sx < 0 || sx >= mw || sy < 0 || sy >= mh) continue;
+          let w = data[sy * mw + sx];
+          if (w !== 0) w = (w ^ flipBit) >>> 0;
+          buf[y * r.w + x] = w;
+        }
+      }
+      for (let y = 0; y < r.h; y++) {
+        for (let x = 0; x < r.w; x++) {
+          const sx = r.x + x, sy = r.y + y;
+          if (sx < 0 || sx >= mw || sy < 0 || sy >= mh) continue;
+          const nx = axis === 'h' ? (r.w - 1 - x) : x;
+          const ny = axis === 'v' ? (r.h - 1 - y) : y;
+          data[sy * mw + sx] = buf[ny * r.w + nx];
+        }
+      }
+      const after = new Uint32Array(data);
+      set({ dirtyTick: s.dirtyTick + 1 });
+      get().pushPatch({
+        type: 'snapshot',
+        label: axis === 'h' ? 'Flip Region X' : 'Flip Region Y',
+        newColors: { size: r.w * r.h },
+        undo: () => { data.set(before); set((st) => ({ dirtyTick: st.dirtyTick + 1 })); },
+        redo: () => { data.set(after); set((st) => ({ dirtyTick: st.dirtyTick + 1 })); },
+      });
+      return true;
+    },
+
+    rotateTilemapRegion180: () => {
+      const s = get();
+      const r = s.tilemapRegion;
+      const cel = s.activeCel();
+      if (!r || !cel || cel.image.colorMode !== 'tilemap') return false;
+      const { w: mw, h: mh, data } = cel.image;
+      const before = new Uint32Array(data);
+      const buf = new Uint32Array(r.w * r.h);
+      for (let y = 0; y < r.h; y++) {
+        for (let x = 0; x < r.w; x++) {
+          const sx = r.x + x, sy = r.y + y;
+          if (sx < 0 || sx >= mw || sy < 0 || sy >= mh) continue;
+          let w = data[sy * mw + sx];
+          if (w !== 0) w = (w ^ TILE_FLIP_X ^ TILE_FLIP_Y) >>> 0;
+          buf[y * r.w + x] = w;
+        }
+      }
+      for (let y = 0; y < r.h; y++) {
+        for (let x = 0; x < r.w; x++) {
+          const sx = r.x + x, sy = r.y + y;
+          if (sx < 0 || sx >= mw || sy < 0 || sy >= mh) continue;
+          data[sy * mw + sx] = buf[(r.h - 1 - y) * r.w + (r.w - 1 - x)];
+        }
+      }
+      const after = new Uint32Array(data);
+      set({ dirtyTick: s.dirtyTick + 1 });
+      get().pushPatch({
+        type: 'snapshot',
+        label: 'Rotate Region 180°',
+        newColors: { size: r.w * r.h },
+        undo: () => { data.set(before); set((st) => ({ dirtyTick: st.dirtyTick + 1 })); },
+        redo: () => { data.set(after); set((st) => ({ dirtyTick: st.dirtyTick + 1 })); },
+      });
+      return true;
+    },
+
+    nudgeTilemapRegion: (dx, dy) => {
+      const s = get();
+      const r = s.tilemapRegion;
+      const cel = s.activeCel();
+      if (!r || !cel || cel.image.colorMode !== 'tilemap') return false;
+      const { w: mw, h: mh, data } = cel.image;
+      const before = new Uint32Array(data);
+      const prevRegion = r;
+      // Snapshot region, clear original, write at new position.
+      const buf = new Uint32Array(r.w * r.h);
+      for (let y = 0; y < r.h; y++) {
+        for (let x = 0; x < r.w; x++) {
+          const sx = r.x + x, sy = r.y + y;
+          if (sx < 0 || sx >= mw || sy < 0 || sy >= mh) continue;
+          buf[y * r.w + x] = data[sy * mw + sx];
+          data[sy * mw + sx] = 0;
+        }
+      }
+      for (let y = 0; y < r.h; y++) {
+        for (let x = 0; x < r.w; x++) {
+          const sx = r.x + dx + x, sy = r.y + dy + y;
+          if (sx < 0 || sx >= mw || sy < 0 || sy >= mh) continue;
+          data[sy * mw + sx] = buf[y * r.w + x];
+        }
+      }
+      const after = new Uint32Array(data);
+      const nextRegion = { x: r.x + dx, y: r.y + dy, w: r.w, h: r.h };
+      set({ tilemapRegion: nextRegion, dirtyTick: s.dirtyTick + 1 });
+      get().pushPatch({
+        type: 'snapshot',
+        label: 'Nudge Region',
+        newColors: { size: r.w * r.h },
+        undo: () => { data.set(before); set((st) => ({ tilemapRegion: prevRegion, dirtyTick: st.dirtyTick + 1 })); },
+        redo: () => { data.set(after); set((st) => ({ tilemapRegion: nextRegion, dirtyTick: st.dirtyTick + 1 })); },
+      });
+      return true;
+    },
+
+    copyTilemapRegion: () => {
+      const s = get();
+      const r = s.tilemapRegion;
+      const cel = s.activeCel();
+      if (!r || !cel || cel.image.colorMode !== 'tilemap') return false;
+      const { w: mw, h: mh, data } = cel.image;
+      const buf = new Uint32Array(r.w * r.h);
+      for (let y = 0; y < r.h; y++) {
+        for (let x = 0; x < r.w; x++) {
+          const sx = r.x + x, sy = r.y + y;
+          if (sx < 0 || sx >= mw || sy < 0 || sy >= mh) continue;
+          buf[y * r.w + x] = data[sy * mw + sx];
+        }
+      }
+      set({ tilemapClipboard: { w: r.w, h: r.h, data: buf } });
+      return true;
+    },
+
+    cutTilemapRegion: () => {
+      const ok = get().copyTilemapRegion();
+      if (!ok) return false;
+      return get().clearTilemapRegionContent();
+    },
+
+    pasteTilemapRegion: () => {
+      const s = get();
+      const cb = s.tilemapClipboard;
+      const r = s.tilemapRegion;
+      const cel = s.activeCel();
+      if (!cb || !cel || cel.image.colorMode !== 'tilemap') return false;
+      const { w: mw, h: mh, data } = cel.image;
+      const ox = r ? r.x : 0;
+      const oy = r ? r.y : 0;
+      for (let y = 0; y < cb.h; y++) {
+        for (let x = 0; x < cb.w; x++) {
+          const sx = ox + x, sy = oy + y;
+          if (sx < 0 || sx >= mw || sy < 0 || sy >= mh) continue;
+          const word = cb.data[y * cb.w + x];
+          if (word === EMPTY_TILE_WORD) continue; // keep destination tile
+          data[sy * mw + sx] = word;
+        }
+      }
+      set({
+        tilemapRegion: { x: ox, y: oy, w: cb.w, h: cb.h },
+        dirtyTick: s.dirtyTick + 1,
+      });
+      return true;
+    },
 
     selectTile: (tilesetId, index) => set({
       selectedTile: tilesetId == null || index == null ? null : { tilesetId, index },
@@ -1208,6 +1670,205 @@ export const useEditorStore = create<EditorState>((set, get) => {
       return true;
     },
 
+    rotateSelectionContent: (angleDeg) => {
+      const s = get();
+      const sel = s.selection;
+      const img = s.activeImage();
+      const cel = s.activeCel();
+      if (!sel || !img || !cel) return false;
+      const beforeData = new Uint32Array(img.data);
+      const beforeSel = sel;
+      const b = sel.bounds;
+      const theta = (angleDeg * Math.PI) / 180;
+      const cos = Math.cos(theta), sin = Math.sin(theta);
+      // Snapshot content + mask, then clear the original region.
+      const src = new Uint32Array(b.w * b.h);
+      const srcMask = new Uint8Array(b.w * b.h);
+      for (let yy = 0; yy < b.h; yy++) {
+        for (let xx = 0; xx < b.w; xx++) {
+          const sx = b.x + xx, sy = b.y + yy;
+          if (sel.mask[sy * sel.w + sx] === 0) continue;
+          const lx = sx - cel.x, ly = sy - cel.y;
+          if (lx < 0 || ly < 0 || lx >= img.w || ly >= img.h) continue;
+          src[yy * b.w + xx] = img.data[ly * img.w + lx];
+          srcMask[yy * b.w + xx] = 1;
+          img.data[ly * img.w + lx] = 0;
+        }
+      }
+      // Rotate each source pixel around the selection center; round destinations.
+      const cxSrc = (b.w - 1) / 2;
+      const cySrc = (b.h - 1) / 2;
+      // Tight bounds of the rotated sample points (dest coords around origin at selection center).
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (let yy = 0; yy < b.h; yy++) {
+        for (let xx = 0; xx < b.w; xx++) {
+          const rx = (xx - cxSrc) * cos - (yy - cySrc) * sin;
+          const ry = (xx - cxSrc) * sin + (yy - cySrc) * cos;
+          if (rx < minX) minX = rx; if (rx > maxX) maxX = rx;
+          if (ry < minY) minY = ry; if (ry > maxY) maxY = ry;
+        }
+      }
+      const nw = Math.max(1, Math.round(maxX - minX) + 1);
+      const nh = Math.max(1, Math.round(maxY - minY) + 1);
+      const out = new Uint32Array(nw * nh);
+      const outMask = new Uint8Array(nw * nh);
+      for (let yy = 0; yy < b.h; yy++) {
+        for (let xx = 0; xx < b.w; xx++) {
+          if (srcMask[yy * b.w + xx] === 0) continue;
+          const rx = (xx - cxSrc) * cos - (yy - cySrc) * sin;
+          const ry = (xx - cxSrc) * sin + (yy - cySrc) * cos;
+          const px = Math.round(rx - minX);
+          const py = Math.round(ry - minY);
+          if (px < 0 || py < 0 || px >= nw || py >= nh) continue;
+          out[py * nw + px] = src[yy * b.w + xx];
+          outMask[py * nw + px] = 1;
+        }
+      }
+      // Paint back centered on the original selection center.
+      const centerX = b.x + cxSrc;
+      const centerY = b.y + cySrc;
+      const destX = Math.round(centerX - (nw - 1) / 2);
+      const destY = Math.round(centerY - (nh - 1) / 2);
+      const newMask = new Uint8Array(sel.mask.length);
+      for (let py = 0; py < nh; py++) {
+        for (let px = 0; px < nw; px++) {
+          if (outMask[py * nw + px] === 0) continue;
+          const sx = destX + px, sy = destY + py;
+          if (sx < 0 || sy < 0 || sx >= sel.w || sy >= sel.h) continue;
+          const lx = sx - cel.x, ly = sy - cel.y;
+          if (lx < 0 || ly < 0 || lx >= img.w || ly >= img.h) continue;
+          img.data[ly * img.w + lx] = out[py * nw + px];
+          newMask[sy * sel.w + sx] = 1;
+        }
+      }
+      const afterData = new Uint32Array(img.data);
+      const afterSel = maskToSelection(newMask, sel.w, sel.h);
+      set({ selection: afterSel, dirtyTick: s.dirtyTick + 1 });
+      get().pushPatch({
+        type: 'snapshot',
+        label: `Rotate Selection ${angleDeg}°`,
+        newColors: { size: b.w * b.h },
+        undo: () => { img.data.set(beforeData); set((st) => ({ selection: beforeSel, dirtyTick: st.dirtyTick + 1 })); },
+        redo: () => { img.data.set(afterData); set((st) => ({ selection: afterSel, dirtyTick: st.dirtyTick + 1 })); },
+      });
+      return true;
+    },
+
+    scaleSelectionContent: (sx, sy) => {
+      const s = get();
+      const sel = s.selection;
+      const img = s.activeImage();
+      const cel = s.activeCel();
+      if (!sel || !img || !cel) return false;
+      if (sx <= 0 || sy <= 0) return false;
+      const beforeData = new Uint32Array(img.data);
+      const beforeSel = sel;
+      const b = sel.bounds;
+      const src = new Uint32Array(b.w * b.h);
+      const srcMask = new Uint8Array(b.w * b.h);
+      for (let yy = 0; yy < b.h; yy++) {
+        for (let xx = 0; xx < b.w; xx++) {
+          const gx = b.x + xx, gy = b.y + yy;
+          if (sel.mask[gy * sel.w + gx] === 0) continue;
+          const lx = gx - cel.x, ly = gy - cel.y;
+          if (lx < 0 || ly < 0 || lx >= img.w || ly >= img.h) continue;
+          src[yy * b.w + xx] = img.data[ly * img.w + lx];
+          srcMask[yy * b.w + xx] = 1;
+          img.data[ly * img.w + lx] = 0;
+        }
+      }
+      const nw = Math.max(1, Math.round(b.w * sx));
+      const nh = Math.max(1, Math.round(b.h * sy));
+      const newMask = new Uint8Array(sel.mask.length);
+      for (let py = 0; py < nh; py++) {
+        for (let px = 0; px < nw; px++) {
+          // Nearest-neighbor source lookup.
+          const ix = Math.min(b.w - 1, Math.floor((px + 0.5) / sx));
+          const iy = Math.min(b.h - 1, Math.floor((py + 0.5) / sy));
+          if (srcMask[iy * b.w + ix] === 0) continue;
+          const gx = b.x + px, gy = b.y + py;
+          if (gx < 0 || gy < 0 || gx >= sel.w || gy >= sel.h) continue;
+          const lx = gx - cel.x, ly = gy - cel.y;
+          if (lx < 0 || ly < 0 || lx >= img.w || ly >= img.h) continue;
+          img.data[ly * img.w + lx] = src[iy * b.w + ix];
+          newMask[gy * sel.w + gx] = 1;
+        }
+      }
+      const afterData = new Uint32Array(img.data);
+      const afterSel = maskToSelection(newMask, sel.w, sel.h);
+      set({ selection: afterSel, dirtyTick: s.dirtyTick + 1 });
+      get().pushPatch({
+        type: 'snapshot',
+        label: `Scale Selection ${sx}×${sy}`,
+        newColors: { size: b.w * b.h },
+        undo: () => { img.data.set(beforeData); set((st) => ({ selection: beforeSel, dirtyTick: st.dirtyTick + 1 })); },
+        redo: () => { img.data.set(afterData); set((st) => ({ selection: afterSel, dirtyTick: st.dirtyTick + 1 })); },
+      });
+      return true;
+    },
+
+    captureCustomBrush: () => {
+      const s = get();
+      const clip = s.clipboard;
+      const sel = s.selection;
+      const prevBrush = s.customBrush;
+      // Prefer the current selection (captures in-place data) — else fall back to clipboard.
+      let nextBrush: EditorState['customBrush'] = null;
+      if (sel) {
+        const img = s.activeImage();
+        const cel = s.activeCel();
+        if (!img || !cel) return false;
+        const b = sel.bounds;
+        const data = new Uint32Array(b.w * b.h);
+        const mask = new Uint8Array(b.w * b.h);
+        for (let yy = 0; yy < b.h; yy++) {
+          for (let xx = 0; xx < b.w; xx++) {
+            const gx = b.x + xx, gy = b.y + yy;
+            if (sel.mask[gy * sel.w + gx] === 0) continue;
+            const lx = gx - cel.x, ly = gy - cel.y;
+            if (lx < 0 || ly < 0 || lx >= img.w || ly >= img.h) continue;
+            data[yy * b.w + xx] = img.data[ly * img.w + lx];
+            mask[yy * b.w + xx] = 1;
+          }
+        }
+        nextBrush = { w: b.w, h: b.h, data, mask };
+      } else if (clip) {
+        nextBrush = { w: clip.w, h: clip.h, data: new Uint32Array(clip.data), mask: new Uint8Array(clip.mask) };
+      } else {
+        return false;
+      }
+      set({ customBrush: nextBrush });
+      get().pushPatch({
+        type: 'snapshot',
+        label: 'Capture Brush',
+        newColors: { size: nextBrush.w * nextBrush.h },
+        undo: () => set({ customBrush: prevBrush }),
+        redo: () => set({ customBrush: nextBrush }),
+      });
+      return true;
+    },
+    clearCustomBrush: () => set({ customBrush: null }),
+
+    seekHistory: (target) => {
+      const total = get().undoStack.length + get().redoStack.length;
+      if (target < 0 || target > total) return false;
+      let guard = 0;
+      while (get().undoStack.length > target && guard++ < total + 2) get().undo();
+      while (get().undoStack.length < target && get().redoStack.length > 0 && guard++ < total + 2) get().redo();
+      return true;
+    },
+
+    addGuide: (axis, position) => {
+      const id = nextId('gd');
+      set((st) => ({ guides: [...st.guides, { id, axis, position: Math.round(position) }] }));
+      return id;
+    },
+    moveGuide: (id, position) => set((st) => ({
+      guides: st.guides.map((g) => (g.id === id ? { ...g, position: Math.round(position) } : g)),
+    })),
+    deleteGuide: (id) => set((st) => ({ guides: st.guides.filter((g) => g.id !== id) })),
+    clearGuides: () => set({ guides: [] }),
+
     rotateSelection180: () => {
       const s = get();
       const sel = s.selection;
@@ -1382,6 +2043,12 @@ export const useEditorStore = create<EditorState>((set, get) => {
       },
       dirtyTick: s.dirtyTick + 1,
     })),
+    setLayerLocked: (layerId, locked) => set((s) => ({
+      sprite: {
+        ...s.sprite,
+        layers: s.sprite.layers.map((l) => (l.id === layerId ? { ...l, locked } : l)),
+      },
+    })),
     setLayerBlendMode: (layerId, mode) => set((s) => ({
       sprite: {
         ...s.sprite,
@@ -1474,6 +2141,249 @@ export const useEditorStore = create<EditorState>((set, get) => {
       get().moveLayer(layerId, i - 1);
     },
 
+    addGroupLayer: (name) => {
+      const s = get();
+      const id = nextId('lay');
+      const group: GroupLayer = {
+        id,
+        name: name ?? `Group ${s.sprite.layers.filter((l) => l.type === 'group').length + 1}`,
+        type: 'group',
+        visible: true,
+        locked: false,
+        opacity: 255,
+        childIds: [],
+        expanded: true,
+      };
+      set({
+        sprite: {
+          ...s.sprite,
+          layers: [...s.sprite.layers, group],
+          layerOrder: [...s.sprite.layerOrder, id],
+        },
+        currentLayerId: id,
+      });
+      return id;
+    },
+
+    setLayerParent: (layerId, parentId) => set((s) => {
+      const layer = s.sprite.layers.find((l) => l.id === layerId);
+      if (!layer) return {};
+      if (parentId) {
+        const parent = s.sprite.layers.find((l) => l.id === parentId);
+        if (!parent || parent.type !== 'group') return {};
+      }
+      const layers = s.sprite.layers.map((l) => {
+        if (l.id === layerId) return { ...l, parentId: parentId ?? undefined };
+        if (l.type === 'group') {
+          const next = { ...l, childIds: l.childIds.filter((c) => c !== layerId) };
+          if (parentId && l.id === parentId) next.childIds = [...next.childIds, layerId];
+          return next;
+        }
+        return l;
+      });
+      return { sprite: { ...s.sprite, layers }, dirtyTick: s.dirtyTick + 1 };
+    }),
+
+    toggleGroupExpanded: (groupId) => set((s) => ({
+      sprite: {
+        ...s.sprite,
+        layers: s.sprite.layers.map((l) =>
+          l.id === groupId && l.type === 'group' ? { ...l, expanded: !(l.expanded ?? true) } : l
+        ),
+      },
+    })),
+
+    addReferenceLayer: (img, name) => {
+      const s = get();
+      const prevLayers = s.sprite.layers;
+      const prevOrder = s.sprite.layerOrder;
+      const prevCels = s.sprite.cels;
+      const layerId = nextId('lay');
+      const layer: ReferenceLayer = {
+        id: layerId,
+        name: name ?? `Reference ${s.sprite.layers.filter((l) => l.type === 'reference').length + 1}`,
+        type: 'reference',
+        visible: true,
+        locked: true,    // references are always locked (they're a tracing aid)
+        opacity: 128,    // semi-transparent by default so user can trace over it
+      };
+      // One cel per frame, all sharing the image reference.
+      const cels: Cel[] = s.sprite.frames.map((_, f) => ({
+        id: nextId('cel'),
+        layerId,
+        frame: f,
+        x: 0,
+        y: 0,
+        opacity: 255,
+        image: img,
+      }));
+      const nextLayers = [...prevLayers, layer];
+      const nextOrder = [...prevOrder, layerId];
+      const nextCels = [...prevCels, ...cels];
+      set({
+        sprite: {
+          ...s.sprite,
+          layers: nextLayers,
+          layerOrder: nextOrder,
+          cels: nextCels,
+        },
+        dirtyTick: s.dirtyTick + 1,
+      });
+      get().pushPatch({
+        type: 'snapshot',
+        label: 'Add Reference Layer',
+        newColors: { size: cels.length },
+        undo: () => set((st) => ({
+          sprite: { ...st.sprite, layers: prevLayers, layerOrder: prevOrder, cels: prevCels },
+          dirtyTick: st.dirtyTick + 1,
+        })),
+        redo: () => set((st) => ({
+          sprite: { ...st.sprite, layers: nextLayers, layerOrder: nextOrder, cels: nextCels },
+          dirtyTick: st.dirtyTick + 1,
+        })),
+      });
+      return layerId;
+    },
+
+    linkCels: (celIds) => {
+      const s = get();
+      if (celIds.length < 2) return false;
+      const targets = celIds.map((id) => s.sprite.cels.find((c) => c.id === id)).filter(Boolean) as Cel[];
+      if (targets.length !== celIds.length) return false;
+      // All link-targets must belong to the same layer — otherwise linking makes no semantic sense.
+      const layerId = targets[0].layerId;
+      if (targets.some((c) => c.layerId !== layerId)) return false;
+      const prevCels = s.sprite.cels;
+      // Pick an image (prefer the first). Share the reference across all.
+      const img = targets[0].image;
+      const groupId = targets[0].linkedGroupId ?? nextId('lnk');
+      const nextCels = prevCels.map((c) =>
+        celIds.includes(c.id) ? { ...c, image: img, linkedGroupId: groupId } : c
+      );
+      set({ sprite: { ...s.sprite, cels: nextCels }, dirtyTick: s.dirtyTick + 1 });
+      get().pushPatch({
+        type: 'snapshot',
+        label: 'Link Cels',
+        newColors: { size: celIds.length },
+        undo: () => set((st) => ({ sprite: { ...st.sprite, cels: prevCels }, dirtyTick: st.dirtyTick + 1 })),
+        redo: () => set((st) => ({ sprite: { ...st.sprite, cels: nextCels }, dirtyTick: st.dirtyTick + 1 })),
+      });
+      return true;
+    },
+
+    unlinkCel: (celId) => {
+      const s = get();
+      const cel = s.sprite.cels.find((c) => c.id === celId);
+      if (!cel || !cel.linkedGroupId) return false;
+      const prevCels = s.sprite.cels;
+      // Clone the shared image so changes to this cel no longer affect siblings.
+      const cloned: AnyImage =
+        cel.image.colorMode === 'rgba'
+          ? { colorMode: 'rgba', w: cel.image.w, h: cel.image.h, data: new Uint32Array(cel.image.data) }
+          : cel.image.colorMode === 'tilemap'
+            ? { colorMode: 'tilemap', w: cel.image.w, h: cel.image.h, data: new Uint32Array(cel.image.data) }
+            : { colorMode: cel.image.colorMode, w: cel.image.w, h: cel.image.h, data: new Uint8Array(cel.image.data) };
+      const nextCels = prevCels.map((c) =>
+        c.id === celId ? { ...c, image: cloned, linkedGroupId: undefined } : c
+      );
+      set({ sprite: { ...s.sprite, cels: nextCels }, dirtyTick: s.dirtyTick + 1 });
+      get().pushPatch({
+        type: 'snapshot',
+        label: 'Unlink Cel',
+        newColors: { size: 1 },
+        undo: () => set((st) => ({ sprite: { ...st.sprite, cels: prevCels }, dirtyTick: st.dirtyTick + 1 })),
+        redo: () => set((st) => ({ sprite: { ...st.sprite, cels: nextCels }, dirtyTick: st.dirtyTick + 1 })),
+      });
+      return true;
+    },
+
+    addSlice: (bounds, name) => {
+      const s = get();
+      const prevSlices = s.sprite.slices;
+      const prevSelected = s.selectedSliceId;
+      const sliceId = nextId('slc');
+      const colors = ['#38bdf8', '#f472b6', '#4ade80', '#facc15', '#fb7185', '#a78bfa'];
+      const color = colors[(prevSlices?.length ?? 0) % colors.length];
+      const slice: Slice = {
+        id: sliceId,
+        name: name ?? `Slice ${(prevSlices?.length ?? 0) + 1}`,
+        color,
+        keys: [{ frame: s.currentFrame, bounds }],
+      };
+      const nextSlices = [...(prevSlices ?? []), slice];
+      set({
+        sprite: { ...s.sprite, slices: nextSlices },
+        selectedSliceId: sliceId,
+      });
+      get().pushPatch({
+        type: 'snapshot',
+        label: 'Add Slice',
+        newColors: { size: 1 },
+        undo: () => set((st) => ({ sprite: { ...st.sprite, slices: prevSlices }, selectedSliceId: prevSelected })),
+        redo: () => set((st) => ({ sprite: { ...st.sprite, slices: nextSlices }, selectedSliceId: sliceId })),
+      });
+      return sliceId;
+    },
+
+    deleteSlice: (sliceId) => {
+      const s = get();
+      const prevSlices = s.sprite.slices;
+      const prevSelected = s.selectedSliceId;
+      const nextSlices = (prevSlices ?? []).filter((x) => x.id !== sliceId);
+      const nextSelected = s.selectedSliceId === sliceId ? null : s.selectedSliceId;
+      set({
+        sprite: { ...s.sprite, slices: nextSlices },
+        selectedSliceId: nextSelected,
+      });
+      get().pushPatch({
+        type: 'snapshot',
+        label: 'Delete Slice',
+        newColors: { size: 1 },
+        undo: () => set((st) => ({ sprite: { ...st.sprite, slices: prevSlices }, selectedSliceId: prevSelected })),
+        redo: () => set((st) => ({ sprite: { ...st.sprite, slices: nextSlices }, selectedSliceId: nextSelected })),
+      });
+    },
+
+    renameSlice: (sliceId, name) => {
+      const s = get();
+      const prevSlices = s.sprite.slices;
+      const nextSlices = (prevSlices ?? []).map((x) => (x.id === sliceId ? { ...x, name } : x));
+      set({ sprite: { ...s.sprite, slices: nextSlices } });
+      get().pushPatch({
+        type: 'snapshot',
+        label: 'Rename Slice',
+        newColors: { size: 1 },
+        undo: () => set((st) => ({ sprite: { ...st.sprite, slices: prevSlices } })),
+        redo: () => set((st) => ({ sprite: { ...st.sprite, slices: nextSlices } })),
+      });
+    },
+
+    setSliceColor: (sliceId, color) => set((s) => ({
+      sprite: {
+        ...s.sprite,
+        slices: (s.sprite.slices ?? []).map((x) => (x.id === sliceId ? { ...x, color } : x)),
+      },
+    })),
+
+    updateSliceKey: (sliceId, frame, patch) => set((s) => ({
+      sprite: {
+        ...s.sprite,
+        slices: (s.sprite.slices ?? []).map((slice) => {
+          if (slice.id !== sliceId) return slice;
+          const existing = slice.keys.find((k) => k.frame === frame);
+          const nextKey: SliceKey = existing
+            ? { ...existing, ...patch }
+            : { frame, bounds: { x: 0, y: 0, w: 1, h: 1 }, ...patch };
+          const keys = existing
+            ? slice.keys.map((k) => (k.frame === frame ? nextKey : k))
+            : [...slice.keys, nextKey].sort((a, b) => a.frame - b.frame);
+          return { ...slice, keys };
+        }),
+      },
+    })),
+
+    selectSlice: (sliceId) => set({ selectedSliceId: sliceId }),
+
     mergeLayerDown: (layerId) => {
       const s = get();
       const idx = s.sprite.layerOrder.indexOf(layerId);
@@ -1549,20 +2459,6 @@ export const useEditorStore = create<EditorState>((set, get) => {
       },
     })),
 
-    convertRasterToTilemap: (layerId, tilesetId, tileW, tileH) => {
-      const s = get();
-      const layer = s.sprite.layers.find((l) => l.id === layerId);
-      if (!layer || layer.type !== 'raster') return false;
-      const cel = s.sprite.cels.find((c) => c.layerId === layerId && c.frame === s.currentFrame);
-      if (!cel || cel.image.colorMode !== 'rgba') return false;
-      // Delegate to the existing generate path — we re-use it for the actual dedup,
-      // but we don't want a NEW tileset: the user-chosen one is passed in via selectTile.
-      // Simplest implementation: call generate, then swap the returned tileset for the
-      // chosen one by remapping indices. To keep scope tight, we just call generate and
-      // let it create a fresh tileset; the user can choose tileset during generate.
-      void tilesetId; void tileW; void tileH;
-      return false; // stub — the Convert dialog uses generateTilesetFromLayer directly
-    },
     convertTilemapToRaster: (layerId) => {
       const s = get();
       const layer = s.sprite.layers.find((l) => l.id === layerId);

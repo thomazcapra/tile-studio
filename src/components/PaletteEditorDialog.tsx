@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
 import clsx from 'clsx';
-import { Plus, Trash2, Sparkles } from 'lucide-react';
+import { Plus, Trash2, Sparkles, Upload, Download, ArrowUpDown } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button, Dialog, DialogActions, DialogField } from './Dialog';
 import { useEditorStore } from '../store/editor';
 import { PALETTE_PRESETS, packPreset } from '../model/palette-presets';
 import { packRGBA, unpackRGBA } from '../render/image-ops';
+import { paletteToGPL, paletteToPAL, paletteToHex, parsePaletteFile } from '../io/palette-io';
+import { downloadBlob, pickFile } from '../io/png';
 
 export function PaletteEditorDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const palette = useEditorStore((s) => s.sprite.palette);
@@ -28,6 +30,56 @@ export function PaletteEditorDialog({ open, onClose }: { open: boolean; onClose:
     toast(`Loaded preset: ${p.name} (${p.colors.length} colors)`);
   }
 
+  async function onImport() {
+    const f = await pickFile('.gpl,.pal,.hex,.txt,text/plain');
+    if (!f) return;
+    try {
+      const text = await f.text();
+      const colors = parsePaletteFile(f.name, text);
+      setPalette(colors);
+      toast.success(`Imported ${f.name} (${colors.length} colors)`);
+    } catch (err) {
+      toast.error(`Palette import failed: ${(err as Error).message}`);
+    }
+  }
+
+  function onExport(kind: 'gpl' | 'pal' | 'hex') {
+    const text =
+      kind === 'gpl' ? paletteToGPL(palette.colors, 'Tile Studio')
+      : kind === 'pal' ? paletteToPAL(palette.colors)
+      : paletteToHex(palette.colors);
+    const mime = kind === 'pal' ? 'application/octet-stream' : 'text/plain';
+    downloadBlob(new Blob([text], { type: mime }), `palette.${kind}`);
+    toast.success(`Saved palette.${kind}`);
+  }
+
+  function sortBy(mode: 'hue' | 'luma' | 'lightness') {
+    const arr = Array.from(palette.colors).map((c) => {
+      const r = c & 0xff, g = (c >>> 8) & 0xff, b = (c >>> 16) & 0xff;
+      const max = Math.max(r, g, b), min = Math.min(r, g, b);
+      const v = max / 255, s = max === 0 ? 0 : (max - min) / max;
+      let h = 0;
+      if (max !== min) {
+        const d = max - min;
+        if (max === r) h = ((g - b) / d) % 6;
+        else if (max === g) h = (b - r) / d + 2;
+        else h = (r - g) / d + 4;
+        h = (h * 60 + 360) % 360;
+      }
+      // Rec.601 luma.
+      const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+      const lightness = (max + min) / 2;
+      let key: number;
+      if (mode === 'hue') key = h * 1e6 + s * 1e3 + v;
+      else if (mode === 'luma') key = luma;
+      else key = lightness;
+      return { c, key };
+    });
+    arr.sort((a, b) => a.key - b.key);
+    setPalette(new Uint32Array(arr.map((x) => x.c)));
+    toast(`Sorted palette by ${mode}`);
+  }
+
   const current = palette.colors[selected] ?? 0;
 
   return (
@@ -45,6 +97,65 @@ export function PaletteEditorDialog({ open, onClose }: { open: boolean; onClose:
           ))}
         </select>
       </DialogField>
+
+      <div className="flex flex-wrap gap-1 text-[11px]">
+        <button
+          data-testid="pe-import"
+          onClick={onImport}
+          className="inline-flex items-center gap-1 px-2 py-1 rounded border border-border hover:bg-panel hover:text-white text-ink/80"
+          title="Import .gpl / .pal / .hex"
+        >
+          <Upload size={11} /> Import…
+        </button>
+        <button
+          data-testid="pe-export-gpl"
+          onClick={() => onExport('gpl')}
+          className="inline-flex items-center gap-1 px-2 py-1 rounded border border-border hover:bg-panel hover:text-white text-ink/80"
+          title="GIMP .gpl"
+        >
+          <Download size={11} /> .gpl
+        </button>
+        <button
+          data-testid="pe-export-pal"
+          onClick={() => onExport('pal')}
+          className="inline-flex items-center gap-1 px-2 py-1 rounded border border-border hover:bg-panel hover:text-white text-ink/80"
+          title="JASC .pal"
+        >
+          <Download size={11} /> .pal
+        </button>
+        <button
+          data-testid="pe-export-hex"
+          onClick={() => onExport('hex')}
+          className="inline-flex items-center gap-1 px-2 py-1 rounded border border-border hover:bg-panel hover:text-white text-ink/80"
+          title="HEX list"
+        >
+          <Download size={11} /> .hex
+        </button>
+        <button
+          data-testid="pe-sort-hue"
+          onClick={() => sortBy('hue')}
+          className="inline-flex items-center gap-1 px-2 py-1 rounded border border-border hover:bg-panel hover:text-white text-ink/80"
+          title="Sort by hue/saturation/value"
+        >
+          <ArrowUpDown size={11} /> Sort hue
+        </button>
+        <button
+          data-testid="pe-sort-luma"
+          onClick={() => sortBy('luma')}
+          className="inline-flex items-center gap-1 px-2 py-1 rounded border border-border hover:bg-panel hover:text-white text-ink/80"
+          title="Sort by luma (Rec.601)"
+        >
+          <ArrowUpDown size={11} /> Sort luma
+        </button>
+        <button
+          data-testid="pe-sort-lightness"
+          onClick={() => sortBy('lightness')}
+          className="inline-flex items-center gap-1 px-2 py-1 rounded border border-border hover:bg-panel hover:text-white text-ink/80"
+          title="Sort by HSL lightness"
+        >
+          <ArrowUpDown size={11} /> Sort light
+        </button>
+      </div>
 
       <div className="flex items-center gap-2">
         <span className="text-[10px] uppercase tracking-wider text-ink/60 flex-1">Swatches ({palette.colors.length})</span>
