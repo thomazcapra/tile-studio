@@ -6,8 +6,11 @@ import type { ToolSession } from '../tools/types';
 import { lineEach } from '../render/image-ops';
 import { makeTileWord, TILE_FLIP_D, TILE_FLIP_X, TILE_FLIP_Y, type Sprite } from '../model/types';
 import type { PixelPatch } from '../store/history';
+import { revertPatch } from '../store/history';
 import { TextDialog } from './TextDialog';
 import { usePrefsStore } from '../prefs/prefs-store';
+import { centroid, distance, makePinchPan } from '../input/gesture';
+import { SoftModifiersBar } from './SoftModifiersBar';
 
 // Build a tinted ghost canvas for a frame (used by onion skin).
 function buildOnionCanvas(sprite: Sprite, frame: number, tint: string): HTMLCanvasElement {
@@ -93,7 +96,13 @@ export function Viewport() {
   const setCursor = useEditorStore((s) => s.setCursor);
   const zoomBy = useEditorStore((s) => s.zoomBy);
   const setPan = useEditorStore((s) => s.setPan);
+  const setZoom = useEditorStore((s) => s.setZoom);
   const resetView = useEditorStore((s) => s.resetView);
+
+  // Active touch/pen pointers, keyed by pointerId. Used to detect multi-touch gestures.
+  const pointersRef = useRef<Map<number, { x: number; y: number; type: string }>>(new Map());
+  // When set, two fingers are pinch-zooming / panning the canvas.
+  const gestureRef = useRef<{ pinchPan: ReturnType<typeof makePinchPan> } | null>(null);
 
   const dims = useEditorStore.getState().editTargetDims();
 
@@ -542,7 +551,7 @@ export function Viewport() {
   }
 
   // --- Raster paint (existing) ---
-  function beginStroke(e: React.MouseEvent, button: 0 | 2) {
+  function beginStroke(e: React.PointerEvent, button: 0 | 2) {
     const { x, y } = toSpritePixel(e.clientX, e.clientY);
     const s = useEditorStore.getState();
     // Locked layers can't be painted on.
@@ -561,6 +570,7 @@ export function Viewport() {
       }
       return;
     }
+    const prefs = usePrefsStore.getState();
     const session = currentTool.begin(
       {
         image: img,
@@ -577,6 +587,10 @@ export function Viewport() {
         pixelPerfect: s.pixelPerfect,
         symmetryMode: s.symmetryMode,
         customBrush: s.customBrush,
+        pointerType: e.pointerType as 'mouse' | 'pen' | 'touch',
+        pressure: e.pressure,
+        pressureEnabled: prefs.penPressureSize,
+        pressureMin: prefs.penPressureMin,
       },
       x, y
     );
@@ -584,12 +598,13 @@ export function Viewport() {
     s.markDirty();
   }
 
-  function continueStroke(e: React.MouseEvent) {
+  function continueStroke(e: React.PointerEvent) {
     const str = strokeRef.current;
     if (!str) return;
     const { x, y } = toSpritePixel(e.clientX, e.clientY);
     if (x === str.lastPx && y === str.lastPy) return;
-    lineEach(str.lastPx, str.lastPy, x, y, (px, py) => str.session.move(px, py));
+    const p = e.pressure;
+    lineEach(str.lastPx, str.lastPy, x, y, (px, py) => str.session.move(px, py, p));
     str.lastPx = x; str.lastPy = y;
     useEditorStore.getState().markDirty();
   }
@@ -604,21 +619,144 @@ export function Viewport() {
   }
 
   // --- Event handlers ---
-  function onMouseDown(e: React.MouseEvent) {
-    if (e.button === 1 || (e.button === 0 && e.altKey)) {
+  // Translate a PointerEvent's button into our 0=primary | 2=secondary scheme.
+  // - Mouse: 0 left, 1 middle, 2 right (unchanged).
+  // - Pen tip: button=0 → primary. Pen barrel button: button=5 → secondary.
+  // - Touch: button=0 → primary (no secondary; long-press handles right-click separately).
+  function pointerButton(e: React.PointerEvent): 0 | 1 | 2 | -1 {
+    if (e.pointerType === 'mouse') {
+      if (e.button === 0) return 0;
+      if (e.button === 1) return 1;
+      if (e.button === 2) return 2;
+      return -1;
+    }
+    if (e.pointerType === 'pen') {
+      if (e.button === 5) return 2;
+      return 0;
+    }
+    // touch
+    return 0;
+  }
+
+  function tryCapture(el: HTMLElement, pointerId: number) {
+    // Browsers throw if the pointer was already released or never realized (e.g. synthetic
+    // events in tests). We don't want a thrown capture to abort the rest of the handler.
+    try { el.setPointerCapture(pointerId); } catch { /* ignore */ }
+  }
+
+  // Drop in-flight raster/tile/selection state without committing to history.
+  // Used when a second touch arrives mid-stroke and we transition to gesture mode.
+  function abortInFlightStroke() {
+    const str = strokeRef.current;
+    if (str) {
+      const patch = str.session.end();
+      if (patch) revertPatch(patch);
+      strokeRef.current = null;
+    }
+    const tStr = tileStrokeRef.current;
+    if (tStr) {
+      revertPatch(tStr.patch);
+      tileStrokeRef.current = null;
+    }
+    selectionDragRef.current = null;
+    lassoRef.current = null;
+    panRef.current = null;
+    useEditorStore.getState().markDirty();
+  }
+
+  function countTouches(): number {
+    let n = 0;
+    for (const p of pointersRef.current.values()) {
+      if (p.type === 'touch') n++;
+    }
+    return n;
+  }
+
+  function getTwoTouches(): [{ x: number; y: number }, { x: number; y: number }] | null {
+    const touches: { x: number; y: number }[] = [];
+    for (const p of pointersRef.current.values()) {
+      if (p.type === 'touch') touches.push(p);
+      if (touches.length === 2) break;
+    }
+    return touches.length === 2 ? [touches[0], touches[1]] : null;
+  }
+
+  function enterGesture() {
+    const two = getTwoTouches();
+    if (!two) return;
+    const c0 = centroid(two[0], two[1]);
+    const d0 = distance(two[0], two[1]);
+    const rect = canvasRef.current!.getBoundingClientRect();
+    const vp = useEditorStore.getState().viewport;
+    gestureRef.current = {
+      pinchPan: makePinchPan({
+        cx0: c0.x - rect.left,
+        cy0: c0.y - rect.top,
+        dist0: Math.max(1, d0),
+        zoom0: vp.zoom,
+        panX0: vp.panX,
+        panY0: vp.panY,
+      }),
+    };
+  }
+
+  function updateGesture() {
+    const g = gestureRef.current;
+    const two = getTwoTouches();
+    if (!g || !two) return;
+    const c = centroid(two[0], two[1]);
+    const d = distance(two[0], two[1]);
+    const rect = canvasRef.current!.getBoundingClientRect();
+    const out = g.pinchPan.update(c.x - rect.left, c.y - rect.top, Math.max(1, d));
+    setZoom(out.zoom);
+    setPan(out.panX, out.panY);
+  }
+
+  function leaveGesture() { gestureRef.current = null; }
+
+  function onPointerDown(e: React.PointerEvent) {
+    // Track every active touch / pen pointer so multi-touch logic can see them.
+    if (e.pointerType === 'touch' || e.pointerType === 'pen') {
+      pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
+    }
+
+    // Two or more touches (Apple Pencil ignored — pen pointers always paint) → gesture mode.
+    // The first touch was already handled as a paint stroke; aborting it here avoids
+    // a leftover squiggle when the user starts pinch-zooming.
+    if (e.pointerType === 'touch' && countTouches() >= 2) {
+      if (!gestureRef.current) {
+        abortInFlightStroke();
+        enterGesture();
+      }
       e.preventDefault();
+      tryCapture(e.currentTarget as HTMLElement, e.pointerId);
+      return;
+    }
+
+    const btn = pointerButton(e);
+    // Bake the on-screen soft-modifier latches together with the real keyboard state, so
+    // tablet users without a keyboard can still trigger Shift+drag, Alt+drag, etc.
+    const sm = useEditorStore.getState();
+    const shiftKey = e.shiftKey || sm.softShift;
+    const altKey = e.altKey || sm.softAlt;
+    const ctrlKey = e.ctrlKey || sm.softCtrl;
+    // Middle-click pan, or Alt+left-click pan (now also triggers when softAlt latched).
+    if (btn === 1 || (btn === 0 && altKey && (e.pointerType === 'mouse' || sm.softAlt))) {
+      e.preventDefault();
+      tryCapture(e.currentTarget as HTMLElement, e.pointerId);
       panRef.current = { dragging: true, lastX: e.clientX, lastY: e.clientY };
       return;
     }
-    if (e.button !== 0 && e.button !== 2) return;
+    if (btn !== 0 && btn !== 2) return;
     e.preventDefault();
+    tryCapture(e.currentTarget as HTMLElement, e.pointerId);
 
     const storeTool = useEditorStore.getState().tool;
 
     // Selection tools bypass the paint pipeline.
     if (storeTool === 'select-rect' || storeTool === 'select-ellipse') {
       const { x, y } = toSpritePixel(e.clientX, e.clientY);
-      const mode = e.shiftKey ? 'add' : e.altKey ? 'subtract' : (e.ctrlKey && e.shiftKey) ? 'intersect' : 'replace';
+      const mode = shiftKey ? 'add' : altKey ? 'subtract' : (ctrlKey && shiftKey) ? 'intersect' : 'replace';
       selectionDragRef.current = { kind: storeTool === 'select-ellipse' ? 'ellipse' : 'rect', x0: x, y0: y, x1: x, y1: y, mode };
       draw();
       return;
@@ -632,14 +770,14 @@ export function Viewport() {
     }
     if (storeTool === 'select-lasso') {
       const { x, y } = toSpritePixel(e.clientX, e.clientY);
-      const mode = e.shiftKey ? 'add' : e.altKey ? 'subtract' : 'replace';
+      const mode = shiftKey ? 'add' : altKey ? 'subtract' : 'replace';
       lassoRef.current = { points: [[x + 0.5, y + 0.5]], mode };
       draw();
       return;
     }
     if (storeTool === 'select-wand') {
       const { x, y } = toSpritePixel(e.clientX, e.clientY);
-      const mode = e.shiftKey ? 'add' : e.altKey ? 'subtract' : 'replace';
+      const mode = shiftKey ? 'add' : altKey ? 'subtract' : 'replace';
       useEditorStore.getState().selectByColor(x, y, useEditorStore.getState().wandTolerance, mode);
       return;
     }
@@ -652,13 +790,22 @@ export function Viewport() {
     const tCtx = getTilemapCtx();
     if (tCtx) {
       const { x, y } = toSpritePixel(e.clientX, e.clientY);
-      beginTileStroke(tCtx, Math.floor(x / tCtx.tw), Math.floor(y / tCtx.th), e.button as 0 | 2);
+      beginTileStroke(tCtx, Math.floor(x / tCtx.tw), Math.floor(y / tCtx.th), btn as 0 | 2);
     } else {
-      beginStroke(e, e.button as 0 | 2);
+      beginStroke(e, btn as 0 | 2);
     }
   }
 
-  function onMouseMove(e: React.MouseEvent) {
+  function onPointerMove(e: React.PointerEvent) {
+    // Keep the tracked pointer position fresh for gesture math.
+    if (e.pointerType === 'touch' || e.pointerType === 'pen') {
+      const tracked = pointersRef.current.get(e.pointerId);
+      if (tracked) { tracked.x = e.clientX; tracked.y = e.clientY; }
+    }
+    if (gestureRef.current) {
+      updateGesture();
+      return;
+    }
     const p = panRef.current;
     if (p?.dragging) {
       setPan(viewport.panX + (e.clientX - p.lastX), viewport.panY + (e.clientY - p.lastY));
@@ -746,14 +893,41 @@ export function Viewport() {
     }
   }
 
-  function onMouseUp() {
+  function onPointerUp(e: React.PointerEvent) {
+    const el = e.currentTarget as HTMLElement;
+    if (el.hasPointerCapture?.(e.pointerId)) {
+      try { el.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+    }
+    if (e.pointerType === 'touch' || e.pointerType === 'pen') {
+      pointersRef.current.delete(e.pointerId);
+    }
+    if (gestureRef.current) {
+      // Stay in gesture mode until both fingers lift, then exit cleanly.
+      if (countTouches() < 2) leaveGesture();
+      // Whether or not we just left, never commit a paint stroke from a gesture lift.
+      return;
+    }
     panRef.current = null;
     commitSelectionDrag();
     endStroke();
     endTileStroke();
+    // One-shot soft modifiers: clear after the pointerup unless the user locked them.
+    const sm = useEditorStore.getState();
+    if (!sm.softLocked && (sm.softShift || sm.softAlt || sm.softCtrl)) {
+      sm.clearSoftModifiers();
+    }
   }
 
-  function onMouseLeave() {
+  // Pointer cancel: browser revoked the pointer (e.g. system gesture took over).
+  // Treat exactly like pointerup so we don't leave a half-painted stroke.
+  function onPointerCancel(e: React.PointerEvent) {
+    onPointerUp(e);
+  }
+
+  function onPointerLeave(e: React.PointerEvent) {
+    // Only mouse generates leave events while not buttoned-down. Touch/pen leave
+    // implies the contact ended and is already handled by pointerup.
+    if (e.pointerType !== 'mouse') return;
     panRef.current = null;
     commitSelectionDrag();
     endStroke();
@@ -768,19 +942,21 @@ export function Viewport() {
       <canvas
         ref={canvasRef}
         data-testid="viewport-canvas"
-        className="block"
+        className="block touch-none"
         style={{ cursor: cursorCss }}
         onWheel={onWheel}
-        onMouseDown={onMouseDown}
-        onMouseMove={onMouseMove}
-        onMouseUp={onMouseUp}
-        onMouseLeave={onMouseLeave}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerCancel}
+        onPointerLeave={onPointerLeave}
         onContextMenu={(e) => e.preventDefault()}
       />
       <Rulers />
       <ViewportHud />
       <EditTargetBadge />
       <BrushFlipsHud />
+      <SoftModifiersBar />
       <TextDialog
         open={textPrompt !== null}
         x={textPrompt?.x ?? 0}

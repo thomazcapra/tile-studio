@@ -65,3 +65,16 @@ export function applyRedo(patch: Patch) {
     return;
   }
 }
+
+// Discard an in-flight stroke without touching undo history. Used when a second touch
+// pointer aborts a one-finger paint stroke (the stroke shouldn't appear in undo at all).
+export function revertPatch(patch: Patch) {
+  if (patch.type === 'pixel') {
+    const { imageRef, oldColors } = patch;
+    for (const [i, c] of oldColors) imageRef.data[i] = c;
+    return;
+  }
+  if (patch.type === 'snapshot') {
+    patch.undo();
+  }
+}

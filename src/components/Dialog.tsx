@@ -23,7 +23,7 @@ export function Dialog({ open, onClose, title, children }: {
       data-testid="dialog-backdrop"
     >
       <div
-        className="w-[340px] max-h-[90vh] rounded-lg border border-border bg-panel shadow-2xl p-4 flex flex-col gap-3 overflow-y-auto"
+        className="w-[340px] max-w-[calc(100vw-2rem)] max-h-[90vh] rounded-lg border border-border bg-panel shadow-2xl p-4 flex flex-col gap-3 overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-label={title}
@@ -66,7 +66,7 @@ export function DialogActions({ children }: { children: React.ReactNode }) {
 }
 
 export function Button({ children, onClick, variant = 'secondary', testId }: { children: React.ReactNode; onClick?: () => void; variant?: 'primary' | 'secondary'; testId?: string }) {
-  const base = 'px-3 py-1.5 rounded-md text-xs transition-colors';
+  const base = 'px-3 py-1.5 coarse:py-2.5 coarse:px-4 rounded-md text-xs transition-colors';
   const cls = variant === 'primary'
     ? `${base} bg-accent text-white hover:bg-accent/90`
     : `${base} bg-panel2 text-ink/80 border border-border hover:text-white hover:bg-[#2d2d30]`;

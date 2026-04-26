@@ -8,6 +8,14 @@ html, body, #root {
   background: #121212;
   color: #d4d4d4;
   font-family: ui-sans-serif, system-ui, sans-serif;
+  /* Prevent rubber-band scroll/refresh from interrupting strokes on iOS/Android. */
+  overscroll-behavior: none;
+}
+
+/* iOS/Safari double-tap zoom and long-press magnifier interfere with drawing. */
+body {
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 #root {
@@ -98,6 +106,27 @@ canvas {
   position: relative;
   flex-shrink: 0;
   user-select: none;
+  /* Prevent the browser from interpreting drags here as scroll/zoom on touch. */
+  touch-action: none;
+}
+
+/* On touch devices the 4 px hit area is impossible to grab — make it 14 px. */
+@media (pointer: coarse) {
+  .section-resizer {
+    height: 14px;
+  }
+  .section-resizer::before {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 36px;
+    height: 4px;
+    background: rgba(255, 255, 255, 0.18);
+    border-radius: 2px;
+    pointer-events: none;
+  }
 }
 
 .section-resizer::after {

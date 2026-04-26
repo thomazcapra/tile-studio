@@ -9,16 +9,26 @@ function strokeColor(ctx: ToolContext): number {
 function makeLineSession(ctx: ToolContext, label: string, color: number, startX: number, startY: number): ToolSession {
   const patch = newStrokePatch(ctx, label);
   const image = ctx.image;
-  const bs = Math.max(1, ctx.brushSize | 0);
-  const half = Math.floor(bs / 2);
+  const baseBs = Math.max(1, ctx.brushSize | 0);
   const sym = ctx.symmetryMode;
+  // Pressure scaling only fires for pen pointers, when the user pref is on, and only when
+  // the base brush is bigger than 1 (a 1-px brush has no headroom to shrink).
+  const pressureActive = ctx.pointerType === 'pen' && !!ctx.pressureEnabled && baseBs > 1;
+  const pMin = Math.max(0.01, Math.min(1, ctx.pressureMin ?? 0.1));
+  const effectiveBs = (pressure: number): number => {
+    if (!pressureActive) return baseBs;
+    const clamped = Math.max(pMin, Math.min(1, pressure));
+    return Math.max(1, Math.round(baseBs * clamped));
+  };
 
   const plotPixel = (x: number, y: number) => {
     if (x < 0 || y < 0 || x >= image.w || y >= image.h) return;
     recordSet(patch, y * image.w + x, color);
   };
-  const plotBrushOne = (x: number, y: number) => {
+  const plotBrushOne = (x: number, y: number, pressure: number) => {
     // Custom brush stamp — the saved data is painted relative to (x,y) centered.
+    // (Pressure is intentionally ignored for custom stamps; resampling them per-stroke
+    // would change the user's authored shape and surprise them.)
     if (ctx.customBrush) {
       const cb = ctx.customBrush;
       const cx = (cb.w - 1) >> 1;
@@ -33,7 +43,9 @@ function makeLineSession(ctx: ToolContext, label: string, color: number, startX:
       }
       return;
     }
+    const bs = effectiveBs(pressure);
     if (bs === 1) { plotPixel(x, y); return; }
+    const half = Math.floor(bs / 2);
     for (let oy = -half; oy < bs - half; oy++) {
       for (let ox = -half; ox < bs - half; ox++) {
         plotPixel(x + ox, y + oy);
@@ -41,48 +53,52 @@ function makeLineSession(ctx: ToolContext, label: string, color: number, startX:
     }
   };
   // Symmetry mirrors the brush around the image's central axes.
-  const plotBrush = (x: number, y: number) => {
-    plotBrushOne(x, y);
+  const plotBrush = (x: number, y: number, pressure: number) => {
+    plotBrushOne(x, y, pressure);
     const mx = image.w - 1 - x;
     const my = image.h - 1 - y;
-    if (sym === 'h' || sym === 'both') plotBrushOne(mx, y);
-    if (sym === 'v' || sym === 'both') plotBrushOne(x, my);
-    if (sym === 'both') plotBrushOne(mx, my);
+    if (sym === 'h' || sym === 'both') plotBrushOne(mx, y, pressure);
+    if (sym === 'v' || sym === 'both') plotBrushOne(x, my, pressure);
+    if (sym === 'both') plotBrushOne(mx, my, pressure);
   };
 
   // Pixel-perfect filter — rolling window of the last 3 stamp centers. If the middle pixel
   // is "diagonal between its neighbours" (an elbow), we skip it. This matches Aseprite's PP pencil.
-  const pending: Array<[number, number]> = [];
+  // Each entry carries its own pressure so the brush size is computed at draw time, not enqueue time.
+  const pending: Array<[number, number, number]> = [];
   const flush = (final: boolean) => {
     while (pending.length >= 3 || (final && pending.length >= 1)) {
       if (pending.length >= 3 && ctx.pixelPerfect) {
-        const [[ax, ay], [bx, by], [cx, cy]] = pending;
-        const isElbow = Math.abs(ax - cx) === 1 && Math.abs(ay - cy) === 1 && (bx === ax || bx === cx) && (by === ay || by === cy) && !(ax === cx || ay === cy);
+        const a = pending[0], b = pending[1], c = pending[2];
+        const isElbow = Math.abs(a[0] - c[0]) === 1 && Math.abs(a[1] - c[1]) === 1 && (b[0] === a[0] || b[0] === c[0]) && (b[1] === a[1] || b[1] === c[1]) && !(a[0] === c[0] || a[1] === c[1]);
         if (isElbow) {
           // Drop the middle pixel; keep the outer two.
           pending.splice(1, 1);
           continue;
         }
       }
-      const [px, py] = pending.shift()!;
-      plotBrush(px, py);
+      const [px, py, pp] = pending.shift()!;
+      plotBrush(px, py, pp);
       if (pending.length < 2 && !final) break;
     }
   };
-  const enqueue = (x: number, y: number) => {
+  const enqueue = (x: number, y: number, pressure: number) => {
     const last = pending[pending.length - 1];
     if (last && last[0] === x && last[1] === y) return;
-    pending.push([x, y]);
+    pending.push([x, y, pressure]);
     flush(false);
   };
 
   let lastX = startX, lastY = startY;
-  enqueue(startX, startY);
+  let lastPressure = ctx.pressure ?? 1;
+  enqueue(startX, startY, lastPressure);
   return {
     live: true,
-    move(x, y) {
-      lineEach(lastX, lastY, x, y, (px, py) => enqueue(px, py));
+    move(x, y, pressure) {
+      const pp = pressure ?? lastPressure;
+      lineEach(lastX, lastY, x, y, (px, py) => enqueue(px, py, pp));
       lastX = x; lastY = y;
+      lastPressure = pp;
     },
     end() {
       flush(true);

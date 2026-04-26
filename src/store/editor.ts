@@ -224,6 +224,14 @@ export interface EditorState {
   snapToGrid: boolean;
   wandTolerance: number;    // 0..255 — magic-wand color distance threshold
 
+  // On-screen modifier latches for keyboardless devices (iPad without Magic Keyboard).
+  // The Viewport reads `e.shiftKey || softShift` so these stack with real keyboard modifiers.
+  // Latches are typically one-shot (cleared on next pointerup) but can be locked.
+  softShift: boolean;
+  softAlt: boolean;
+  softCtrl: boolean;
+  softLocked: boolean;      // when true, latches stick across pointerups until manually cleared
+
   undoStack: Patch[];
   redoStack: Patch[];
   dirtyTick: number;
@@ -245,6 +253,10 @@ export interface EditorState {
   setSymmetryMode: (m: 'none' | 'h' | 'v' | 'both') => void;
   toggleSnapToGrid: () => void;
   setWandTolerance: (n: number) => void;
+
+  setSoftModifier: (key: 'shift' | 'alt' | 'ctrl', on: boolean) => void;
+  toggleSoftLocked: () => void;
+  clearSoftModifiers: () => void;
 
   activeCel: () => Cel | null;
   activeImage: () => ImageRGBA | null;
@@ -476,6 +488,11 @@ export const useEditorStore = create<EditorState>((set, get) => {
     snapToGrid: false,
     wandTolerance: 0,
 
+    softShift: false,
+    softAlt: false,
+    softCtrl: false,
+    softLocked: false,
+
     undoStack: [],
     redoStack: [],
     dirtyTick: 0,
@@ -547,6 +564,14 @@ export const useEditorStore = create<EditorState>((set, get) => {
     setSymmetryMode: (m) => set({ symmetryMode: m }),
     toggleSnapToGrid: () => set((s) => ({ snapToGrid: !s.snapToGrid })),
     setWandTolerance: (n) => set({ wandTolerance: Math.max(0, Math.min(255, n | 0)) }),
+
+    setSoftModifier: (key, on) => set(() => {
+      if (key === 'shift') return { softShift: on };
+      if (key === 'alt') return { softAlt: on };
+      return { softCtrl: on };
+    }),
+    toggleSoftLocked: () => set((s) => ({ softLocked: !s.softLocked })),
+    clearSoftModifiers: () => set({ softShift: false, softAlt: false, softCtrl: false }),
 
     activeCel: () => {
       const s = get();

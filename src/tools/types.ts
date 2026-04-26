@@ -20,12 +20,25 @@ export interface ToolContext {
   symmetryMode: 'none' | 'h' | 'v' | 'both';
   // Optional custom brush — if set, pencil stamps this shape instead of a solid square.
   customBrush?: { w: number; h: number; data: Uint32Array; mask: Uint8Array } | null;
+  // --- Pointer-derived inputs (Phase 2) ---
+  // Pointer kind that started the stroke. Used to decide whether to apply pressure.
+  pointerType?: 'mouse' | 'pen' | 'touch';
+  // Pressure of the initial pointerdown sample, 0..1. Mouse always reports 0.5 when held.
+  pressure?: number;
+  // When true, pointerType==='pen' will scale brushSize by pressure.
+  // (Mirror of the user pref, baked in at stroke start so toggling mid-stroke is harmless.)
+  pressureEnabled?: boolean;
+  // Floor for pressure scaling so very light pen contact still draws something visible.
+  pressureMin?: number;
 }
 
 export interface ToolSession {
-  /** Called on every mouse move (including initial down) with integer sprite-pixel coords. */
-  move(x: number, y: number): void;
-  /** Called when mouse released; returns patch to push (or null if no-op). */
+  /** Called on every pointer move (including initial down) with integer sprite-pixel coords.
+   * `pressure` is the latest pointer pressure sample (0..1) when available; tools that don't
+   * care about pressure can ignore it.
+   */
+  move(x: number, y: number, pressure?: number): void;
+  /** Called when pointer released; returns patch to push (or null if no-op). */
   end(): PixelPatch | null;
   /** If true, each move should trigger viewport redraw. */
   live: boolean;

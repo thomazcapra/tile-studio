@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import type { CSSProperties, MouseEvent as ReactMouseEvent } from 'react';
+import { useCallback, useRef, useState } from 'react';
+import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
 import { Eye, EyeOff, Lock, Unlock, Plus, Image as ImageIcon, Grid3x3, Sparkles, Copy, Trash2, ChevronUp, ChevronDown, Merge, Settings2, Folder, FolderOpen, FolderInput, FolderOutput } from 'lucide-react';
 import clsx from 'clsx';
 import { useEditorStore } from '../store/editor';
@@ -8,6 +8,8 @@ import { TilesetsPanel } from './TilesetsPanel';
 import { NewTilemapLayerDialog } from './NewTilemapLayerDialog';
 import { QuantizeDialog } from './QuantizeDialog';
 import { PaletteEditorDialog } from './PaletteEditorDialog';
+import { RowMenuButton } from './RowMenuButton';
+import { useLongPress } from '../input/use-long-press';
 import type { Slice } from '../model/types';
 
 const EMPTY_SLICES: Slice[] = [];
@@ -38,45 +40,41 @@ function loadStoredHeight(storageKey: string | undefined, fallback: number): num
 
 function useResizableHeight(defaultHeight: number, storageKey?: string, minHeight = 60) {
   const [height, setHeight] = useState<number>(() => loadStoredHeight(storageKey, defaultHeight));
-  const draggingRef = useRef(false);
-  const startY = useRef(0);
-  const startH = useRef(0);
+  const dragRef = useRef<{ pointerId: number; startY: number; startH: number; el: HTMLElement } | null>(null);
   const [dragging, setDragging] = useState(false);
 
-  const onMouseDown = useCallback((e: ReactMouseEvent) => {
+  const onPointerDown = useCallback((e: ReactPointerEvent) => {
     e.preventDefault();
-    draggingRef.current = true;
-    startY.current = e.clientY;
-    startH.current = height;
+    const el = e.currentTarget as HTMLElement;
+    try { el.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+    dragRef.current = { pointerId: e.pointerId, startY: e.clientY, startH: height, el };
     setDragging(true);
     document.body.classList.add('section-resizing');
   }, [height]);
 
-  useEffect(() => {
-    function onMove(ev: MouseEvent) {
-      if (!draggingRef.current) return;
-      const delta = ev.clientY - startY.current;
-      const next = Math.max(minHeight, startH.current + delta);
-      setHeight(next);
-    }
-    function onUp() {
-      if (!draggingRef.current) return;
-      draggingRef.current = false;
-      setDragging(false);
-      document.body.classList.remove('section-resizing');
-      if (storageKey && typeof localStorage !== 'undefined') {
-        try { localStorage.setItem(storageKey, String(Math.round(height))); } catch { /* ignore quota */ }
-      }
-    }
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
-    return () => {
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
-    };
-  }, [height, minHeight, storageKey]);
+  const onPointerMove = useCallback((e: ReactPointerEvent) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== e.pointerId) return;
+    const delta = e.clientY - drag.startY;
+    const next = Math.max(minHeight, drag.startH + delta);
+    setHeight(next);
+  }, [minHeight]);
 
-  return { height, dragging, onMouseDown };
+  const finish = useCallback((e: ReactPointerEvent) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== e.pointerId) return;
+    if (drag.el.hasPointerCapture?.(e.pointerId)) {
+      try { drag.el.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+    }
+    dragRef.current = null;
+    setDragging(false);
+    document.body.classList.remove('section-resizing');
+    if (storageKey && typeof localStorage !== 'undefined') {
+      try { localStorage.setItem(storageKey, String(Math.round(height))); } catch { /* ignore quota */ }
+    }
+  }, [height, storageKey]);
+
+  return { height, dragging, onPointerDown, onPointerMove, onPointerUp: finish, onPointerCancel: finish };
 }
 
 export interface SectionProps {
@@ -104,7 +102,8 @@ export function Section({
   minHeight = 60,
   testId,
 }: SectionProps) {
-  const { height, dragging, onMouseDown } = useResizableHeight(defaultHeight, storageKey, minHeight);
+  const resizer = useResizableHeight(defaultHeight, storageKey, minHeight);
+  const { height, dragging } = resizer;
   const style: CSSProperties | undefined = resizable
     ? { flex: `0 0 ${height}px`, height, maxHeight: height }
     : undefined;
@@ -123,7 +122,10 @@ export function Section({
       {resizable && (
         <div
           className={clsx('section-resizer', dragging && 'is-dragging')}
-          onMouseDown={onMouseDown}
+          onPointerDown={resizer.onPointerDown}
+          onPointerMove={resizer.onPointerMove}
+          onPointerUp={resizer.onPointerUp}
+          onPointerCancel={resizer.onPointerCancel}
           role="separator"
           aria-orientation="horizontal"
           aria-label={`Resize ${title} section`}
@@ -264,14 +266,12 @@ function PaletteSection() {
       >
         <div className="grid grid-cols-8 gap-[2px] p-2" data-testid="palette-grid">
           {Array.from(palette.colors).map((c, i) => (
-            <button
+            <PaletteSwatch
               key={i}
-              data-testid={`palette-${i}`}
-              onClick={() => setPrimary(c)}
-              onContextMenu={(e) => { e.preventDefault(); setSecondary(c); }}
-              className="w-6 h-6 rounded-sm border border-black/40 hover:ring-2 hover:ring-accent/60 transition-shadow"
-              style={{ background: u32ToCss(c) }}
-              title={`#${i} — click=primary, right-click=secondary`}
+              index={i}
+              color={c}
+              onPrimary={() => setPrimary(c)}
+              onSecondary={() => setSecondary(c)}
             />
           ))}
         </div>
@@ -279,6 +279,24 @@ function PaletteSection() {
       <QuantizeDialog open={qOpen} onClose={() => setQOpen(false)} />
       <PaletteEditorDialog open={peOpen} onClose={() => setPeOpen(false)} />
     </>
+  );
+}
+
+function PaletteSwatch({ index, color, onPrimary, onSecondary }: {
+  index: number; color: number; onPrimary: () => void; onSecondary: () => void;
+}) {
+  // Long-press on touch / pen mirrors the right-click-as-secondary behavior.
+  const longPress = useLongPress<HTMLButtonElement>(() => onSecondary());
+  return (
+    <button
+      data-testid={`palette-${index}`}
+      onClick={onPrimary}
+      onContextMenu={(e) => { e.preventDefault(); onSecondary(); }}
+      {...longPress}
+      className="w-6 h-6 coarse:w-9 coarse:h-9 rounded-sm border border-black/40 hover:ring-2 hover:ring-accent/60 transition-shadow"
+      style={{ background: u32ToCss(color) }}
+      title={`#${index} — tap=primary, long-press / right-click=secondary`}
+    />
   );
 }
 
@@ -302,6 +320,29 @@ function LayersSection() {
   const [tmlOpen, setTmlOpen] = useState(false);
   const [ctx, setCtx] = useState<{ x: number; y: number; layerId: string } | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
+
+  // Long-press to mirror right-click on touch / pen.
+  const lpRef = useRef<{ timer: number | null; pid: number | null; sx: number; sy: number }>({ timer: null, pid: null, sx: 0, sy: 0 });
+  const cancelLP = useCallback(() => {
+    if (lpRef.current.timer != null) { clearTimeout(lpRef.current.timer); lpRef.current.timer = null; }
+    lpRef.current.pid = null;
+  }, []);
+  const startLP = useCallback((e: ReactPointerEvent, layerId: string) => {
+    if (e.pointerType === 'mouse') return;
+    cancelLP();
+    lpRef.current.pid = e.pointerId;
+    lpRef.current.sx = e.clientX;
+    lpRef.current.sy = e.clientY;
+    const x = e.clientX, y = e.clientY;
+    lpRef.current.timer = window.setTimeout(() => {
+      lpRef.current.timer = null;
+      setCtx({ x, y, layerId });
+    }, 500);
+  }, [cancelLP]);
+  const moveLP = useCallback((e: ReactPointerEvent) => {
+    if (lpRef.current.timer == null || lpRef.current.pid !== e.pointerId) return;
+    if (Math.abs(e.clientX - lpRef.current.sx) > 8 || Math.abs(e.clientY - lpRef.current.sy) > 8) cancelLP();
+  }, [cancelLP]);
 
   return (
     <>
@@ -410,6 +451,10 @@ function LayersSection() {
                   data-testid={`layer-${id}`}
                   onClick={() => setCurrentLayer(id)}
                   onContextMenu={(e) => { e.preventDefault(); setCtx({ x: e.clientX, y: e.clientY, layerId: id }); }}
+                  onPointerDown={(e) => startLP(e, id)}
+                  onPointerMove={moveLP}
+                  onPointerUp={cancelLP}
+                  onPointerCancel={cancelLP}
                   draggable
                   onDragStart={(e) => { setDragId(id); e.dataTransfer.effectAllowed = 'move'; }}
                   onDragOver={(e) => { if (dragId && dragId !== id) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; } }}
@@ -428,7 +473,7 @@ function LayersSection() {
                   }}
                   onDragEnd={() => setDragId(null)}
                   className={clsx(
-                    'px-2 py-1 flex items-center gap-2 border-l-2 cursor-pointer',
+                    'group px-2 py-1 coarse:py-2 flex items-center gap-2 border-l-2 cursor-pointer',
                     active ? 'bg-accent/10 border-accent' : 'border-transparent hover:bg-panel2',
                     dragId === id && 'opacity-50',
                   )}
@@ -466,6 +511,11 @@ function LayersSection() {
                     <span className="text-accent/70 uppercase text-[9px] font-mono" data-testid={`layer-${id}-blend`}>{mode}</span>
                   )}
                   <span className="text-ink/40 uppercase text-[9px]">{l.type}</span>
+                  <RowMenuButton
+                    testId={`layer-${id}-menu`}
+                    ariaLabel="Layer actions"
+                    onOpen={(x, y) => setCtx({ x, y, layerId: id })}
+                  />
                 </li>
               );
             });

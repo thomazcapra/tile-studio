@@ -42,3 +42,14 @@ createRoot(document.getElementById('root')!).render(
     <App />
   </StrictMode>,
 )
+
+// PWA service worker — only register in production builds. Dev uses Vite HMR which
+// would conflict with a SW intercepting module fetches.
+if ('serviceWorker' in navigator && import.meta.env.PROD) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {
+      // Service worker registration failed — non-fatal, the app still works online.
+    });
+  });
+}
+

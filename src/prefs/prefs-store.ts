@@ -12,6 +12,9 @@ export interface PrefsState {
   showGrid: boolean;                   // show pixel grid at high zoom
   pickerColorHistory: number[];        // most-recent color picker entries
   osClipboardEnabled: boolean;         // mirror selections to the OS clipboard
+  // --- Pen / touch (Phase 2) ---
+  penPressureSize: boolean;            // when on, pen pressure scales pencil/eraser brush size
+  penPressureMin: number;              // floor for pressure scaling (0..1)
 
   setShortcut: (actionId: string, combo: string) => void;
   resetShortcut: (actionId: string) => void;
@@ -22,12 +25,18 @@ export interface PrefsState {
   setShowGrid: (b: boolean) => void;
   pushColorHistory: (color: number) => void;
   setOSClipboardEnabled: (b: boolean) => void;
+  setPenPressureSize: (b: boolean) => void;
+  setPenPressureMin: (n: number) => void;
 }
 
 const LS_KEY = 'tileStudio.prefs.v1';
 
-function loadInitial(): Pick<PrefsState, 'shortcuts' | 'checkerSize' | 'autosaveEnabled' | 'autosaveIntervalSec' | 'showGrid' | 'pickerColorHistory' | 'osClipboardEnabled'> {
-  const defaults = {
+type PersistedPrefs = Pick<PrefsState,
+  'shortcuts' | 'checkerSize' | 'autosaveEnabled' | 'autosaveIntervalSec' | 'showGrid'
+  | 'pickerColorHistory' | 'osClipboardEnabled' | 'penPressureSize' | 'penPressureMin'>;
+
+function loadInitial(): PersistedPrefs {
+  const defaults: PersistedPrefs = {
     shortcuts: { ...DEFAULT_SHORTCUTS },
     checkerSize: 8,
     autosaveEnabled: true,
@@ -35,11 +44,13 @@ function loadInitial(): Pick<PrefsState, 'shortcuts' | 'checkerSize' | 'autosave
     showGrid: true,
     pickerColorHistory: [] as number[],
     osClipboardEnabled: true,
+    penPressureSize: true,
+    penPressureMin: 0.1,
   };
   try {
     const raw = localStorage.getItem(LS_KEY);
     if (!raw) return defaults;
-    const parsed = JSON.parse(raw) as Partial<typeof defaults>;
+    const parsed = JSON.parse(raw) as Partial<PersistedPrefs>;
     return {
       ...defaults,
       ...parsed,
@@ -50,7 +61,7 @@ function loadInitial(): Pick<PrefsState, 'shortcuts' | 'checkerSize' | 'autosave
   }
 }
 
-function persist(s: Pick<PrefsState, 'shortcuts' | 'checkerSize' | 'autosaveEnabled' | 'autosaveIntervalSec' | 'showGrid' | 'pickerColorHistory' | 'osClipboardEnabled'>) {
+function persist(s: PersistedPrefs) {
   try { localStorage.setItem(LS_KEY, JSON.stringify(s)); } catch { /* ignore quota */ }
 }
 
@@ -94,4 +105,10 @@ export const usePrefsStore = create<PrefsState>((set, get) => ({
     set({ pickerColorHistory: next });
   },
   setOSClipboardEnabled: (b) => { persist({ ...get(), osClipboardEnabled: b }); set({ osClipboardEnabled: b }); },
+  setPenPressureSize: (b) => { persist({ ...get(), penPressureSize: b }); set({ penPressureSize: b }); },
+  setPenPressureMin: (n) => {
+    const v = Math.max(0, Math.min(1, n));
+    persist({ ...get(), penPressureMin: v });
+    set({ penPressureMin: v });
+  },
 }));

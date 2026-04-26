@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { PointerEvent as ReactPointerEvent } from 'react';
 import { Play, Pause, SkipBack, SkipForward, Plus, Copy, Trash2, Repeat, Tag as TagIcon, Layers as LayersIcon } from 'lucide-react';
 import clsx from 'clsx';
 import { toast } from 'sonner';
@@ -42,6 +43,29 @@ export function Timeline() {
 
   const frameCount = sprite.frames.length;
   const cellSize = 32;
+
+  // Long-press → frame context menu (touch / pen).
+  const lpRef = useRef<{ timer: number | null; pid: number | null; sx: number; sy: number }>({ timer: null, pid: null, sx: 0, sy: 0 });
+  const cancelLP = useCallback(() => {
+    if (lpRef.current.timer != null) { clearTimeout(lpRef.current.timer); lpRef.current.timer = null; }
+    lpRef.current.pid = null;
+  }, []);
+  const startLP = useCallback((e: ReactPointerEvent, frame: number) => {
+    if (e.pointerType === 'mouse') return;
+    cancelLP();
+    lpRef.current.pid = e.pointerId;
+    lpRef.current.sx = e.clientX;
+    lpRef.current.sy = e.clientY;
+    const x = e.clientX, y = e.clientY;
+    lpRef.current.timer = window.setTimeout(() => {
+      lpRef.current.timer = null;
+      setMenu({ x, y, frame });
+    }, 500);
+  }, [cancelLP]);
+  const moveLP = useCallback((e: ReactPointerEvent) => {
+    if (lpRef.current.timer == null || lpRef.current.pid !== e.pointerId) return;
+    if (Math.abs(e.clientX - lpRef.current.sx) > 8 || Math.abs(e.clientY - lpRef.current.sy) > 8) cancelLP();
+  }, [cancelLP]);
 
   return (
     <div className="flex flex-col border-t border-border bg-panel text-[11px]" data-testid="timeline">
@@ -144,6 +168,10 @@ export function Timeline() {
                   onClick={() => setCurrentFrame(i)}
                   onDoubleClick={() => setEditingDurationFor(i)}
                   onContextMenu={(e) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY, frame: i }); }}
+                  onPointerDown={(e) => startLP(e, i)}
+                  onPointerMove={moveLP}
+                  onPointerUp={cancelLP}
+                  onPointerCancel={cancelLP}
                   draggable
                   onDragStart={(e) => { setDragFrame(i); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', String(i)); }}
                   onDragOver={(e) => { if (dragFrame != null && dragFrame !== i) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; } }}
@@ -151,7 +179,7 @@ export function Timeline() {
                   onDragEnd={() => setDragFrame(null)}
                   style={{ width: cellSize }}
                   className={clsx(
-                    'h-6 border-r border-border/40 text-[10px] font-mono flex items-center justify-center transition-colors',
+                    'h-6 coarse:h-9 border-r border-border/40 text-[10px] font-mono flex items-center justify-center transition-colors',
                     active ? 'bg-accent/25 text-white' : 'bg-panel2 text-ink/60 hover:bg-panel',
                     dragFrame === i && 'opacity-50',
                   )}

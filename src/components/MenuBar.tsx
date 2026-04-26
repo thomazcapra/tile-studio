@@ -40,13 +40,20 @@ interface MenuProps {
 
 function Menu({ id, label, items, openMenu, setOpenMenu }: MenuProps) {
   const isOpen = openMenu === id;
+  // Hover-to-switch when another menu is open: keep on fine pointers (mouse), but skip on
+  // coarse / hover-none devices (touch / pen) where hover events are unreliable.
+  const switchOnHover = () => {
+    if (!openMenu || openMenu === id) return;
+    if (typeof window !== 'undefined' && window.matchMedia?.('(hover: none)').matches) return;
+    setOpenMenu(id);
+  };
   return (
-    <div className="relative" onMouseEnter={() => openMenu && setOpenMenu(id)}>
+    <div className="relative" onMouseEnter={switchOnHover}>
       <button
         data-testid={`menu-${id}`}
         onClick={() => setOpenMenu(isOpen ? null : id)}
         className={clsx(
-          'px-2.5 h-7 text-[12px] rounded-md transition-colors',
+          'px-2.5 h-7 coarse:h-10 coarse:px-3 text-[12px] rounded-md transition-colors',
           isOpen ? 'bg-panel2 text-white' : 'text-ink/80 hover:bg-panel2 hover:text-white'
         )}
       >
@@ -63,7 +70,7 @@ function Menu({ id, label, items, openMenu, setOpenMenu }: MenuProps) {
               disabled={it.disabled}
               onClick={() => { it.onClick?.(); setOpenMenu(null); }}
               className={clsx(
-                'w-full flex items-center gap-2 px-2.5 py-1 text-left text-[12px]',
+                'w-full flex items-center gap-2 px-2.5 py-1 coarse:py-2 text-left text-[12px]',
                 it.disabled
                   ? 'text-ink/35 cursor-not-allowed'
                   : 'text-ink/85 hover:text-white hover:bg-panel'

@@ -24,7 +24,7 @@ export function ToolPalette() {
   const tool = useEditorStore((s) => s.tool);
   const setTool = useEditorStore((s) => s.setTool);
   return (
-    <div className="w-11 shrink-0 border-r border-border bg-panel flex flex-col items-center py-1 gap-0.5 min-h-0 overflow-y-auto" data-testid="tool-palette">
+    <div className="w-11 coarse:w-14 shrink-0 border-r border-border bg-panel flex flex-col items-center py-1 gap-0.5 min-h-0 overflow-y-auto" data-testid="tool-palette">
       {ENTRIES.map((t) => {
         const active = tool === t.id;
         const Icon = t.icon;
@@ -36,7 +36,7 @@ export function ToolPalette() {
               onClick={() => setTool(t.id)}
               title={`${t.label} (${t.shortcut})`}
               className={clsx(
-                'w-9 h-9 rounded-md flex items-center justify-center transition-colors',
+                'w-9 h-9 coarse:w-12 coarse:h-12 rounded-md flex items-center justify-center transition-colors',
                 active
                   ? 'bg-accent/25 text-white ring-1 ring-accent/60'
                   : 'text-ink/70 hover:text-white hover:bg-panel2'
@@ -58,15 +58,15 @@ function ColorSwatch() {
   const secondary = useEditorStore((s) => s.secondary);
   const swap = useEditorStore((s) => s.swapColors);
   return (
-    <div className="relative w-9 h-9 mb-1" title="Click to swap (X)" onClick={swap}>
+    <div className="relative w-9 h-9 coarse:w-12 coarse:h-12 mb-1" title="Click to swap (X)" onClick={swap}>
       <div
         data-testid="color-secondary"
-        className="absolute bottom-0 right-0 w-6 h-6 rounded-sm border border-black/70 shadow-inner"
+        className="absolute bottom-0 right-0 w-6 h-6 coarse:w-8 coarse:h-8 rounded-sm border border-black/70 shadow-inner"
         style={{ background: u32ToCss(secondary) }}
       />
       <div
         data-testid="color-primary"
-        className="absolute top-0 left-0 w-6 h-6 rounded-sm border border-black/70 shadow-md cursor-pointer"
+        className="absolute top-0 left-0 w-6 h-6 coarse:w-8 coarse:h-8 rounded-sm border border-black/70 shadow-md cursor-pointer"
         style={{ background: u32ToCss(primary) }}
       />
     </div>

@@ -4,7 +4,7 @@ import { Button, Dialog, DialogActions, DialogField, NumberInput } from './Dialo
 import { usePrefsStore } from '../prefs/prefs-store';
 import { DEFAULT_SHORTCUTS, SHORTCUT_ACTIONS, keyEventToShortcut, type ShortcutAction } from '../prefs/shortcuts';
 
-type Tab = 'general' | 'shortcuts';
+type Tab = 'general' | 'pen' | 'shortcuts';
 
 export function PreferencesDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const prefs = usePrefsStore();
@@ -14,11 +14,14 @@ export function PreferencesDialog({ open, onClose }: { open: boolean; onClose: (
     <Dialog open={open} onClose={onClose} title="Preferences">
       <div className="flex gap-1 text-[11px]">
         <TabBtn active={tab === 'general'} onClick={() => setTab('general')} testId="pref-tab-general">General</TabBtn>
+        <TabBtn active={tab === 'pen'} onClick={() => setTab('pen')} testId="pref-tab-pen">Pen &amp; Touch</TabBtn>
         <TabBtn active={tab === 'shortcuts'} onClick={() => setTab('shortcuts')} testId="pref-tab-shortcuts">Shortcuts</TabBtn>
       </div>
 
       {tab === 'general' ? (
         <GeneralTab />
+      ) : tab === 'pen' ? (
+        <PenTab />
       ) : (
         <ShortcutsTab />
       )}
@@ -86,6 +89,48 @@ function GeneralTab() {
           Mirror copy/paste
         </label>
       </DialogField>
+    </>
+  );
+}
+
+function PenTab() {
+  const penPressureSize = usePrefsStore((s) => s.penPressureSize);
+  const setPenPressureSize = usePrefsStore((s) => s.setPenPressureSize);
+  const penPressureMin = usePrefsStore((s) => s.penPressureMin);
+  const setPenPressureMin = usePrefsStore((s) => s.setPenPressureMin);
+  return (
+    <>
+      <DialogField label="Apple Pencil / stylus pressure">
+        <label className="inline-flex items-center gap-2 text-[11px]">
+          <input
+            data-testid="pref-pen-size"
+            type="checkbox"
+            checked={penPressureSize}
+            onChange={(e) => setPenPressureSize(e.target.checked)}
+          />
+          Pressure controls brush size
+        </label>
+      </DialogField>
+      <DialogField label="Minimum pressure">
+        <div className="flex items-center gap-2">
+          <input
+            data-testid="pref-pen-min"
+            type="range"
+            min={0}
+            max={100}
+            value={Math.round(penPressureMin * 100)}
+            onChange={(e) => setPenPressureMin(Number(e.target.value) / 100)}
+            disabled={!penPressureSize}
+            className="flex-1"
+          />
+          <span className="font-mono text-[10px] text-ink/60 w-10 text-right">{Math.round(penPressureMin * 100)}%</span>
+        </div>
+      </DialogField>
+      <p className="text-[10px] text-ink/50 leading-snug">
+        With a stylus (Apple Pencil, Wacom, Surface Pen), light pressure shrinks the brush down toward
+        1&nbsp;px and full pressure paints at the configured brush size. The minimum prevents very light
+        contact from drawing a 0-px ghost stroke. Mouse and touch (finger) always paint at full size.
+      </p>
     </>
   );
 }

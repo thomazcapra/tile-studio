@@ -40,7 +40,7 @@ export function Toolbar() {
   }
 
   return (
-    <div className="h-11 flex items-center px-3 gap-1 border-b border-border bg-panel text-sm" data-testid="toolbar">
+    <div className="h-11 coarse:h-14 flex items-center px-3 gap-1 border-b border-border bg-panel text-sm" data-testid="toolbar">
       <span className="font-semibold tracking-tight mr-3 flex items-center gap-1">
         <span className="w-2 h-2 bg-accent rounded-sm" />
         Tile Studio
@@ -70,7 +70,7 @@ function IconBtn({ icon: Icon, label, onClick, disabled, testId }: { icon: React
       disabled={disabled}
       title={label}
       aria-label={label}
-      className="w-8 h-8 rounded-md flex items-center justify-center text-ink/80 hover:text-white hover:bg-panel2 disabled:opacity-40 disabled:hover:bg-transparent"
+      className="w-8 h-8 coarse:w-11 coarse:h-11 rounded-md flex items-center justify-center text-ink/80 hover:text-white hover:bg-panel2 disabled:opacity-40 disabled:hover:bg-transparent"
     >
       <Icon size={15} />
     </button>
@@ -87,7 +87,7 @@ function TileModeButton({ current, onSet }: { current: string; onSet: (m: 'raste
       disabled={!hasTiles && !active}
       onClick={() => onSet('tile')}
       title={hasTiles ? 'Edit selected tile' : 'Create a tileset first'}
-      className={`px-2.5 py-1 rounded-md text-[11px] uppercase tracking-wider transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${active ? 'bg-accent/25 text-white ring-1 ring-accent/60' : 'text-ink/70 hover:text-white hover:bg-panel2'}`}
+      className={`px-2.5 py-1 coarse:py-2 coarse:px-3 rounded-md text-[11px] uppercase tracking-wider transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${active ? 'bg-accent/25 text-white ring-1 ring-accent/60' : 'text-ink/70 hover:text-white hover:bg-panel2'}`}
     >
       Tile
     </button>
@@ -101,7 +101,7 @@ function ModeButton({ label, value, current, onSet }: { label: string; value: 'r
       data-testid={`mode-${value}`}
       aria-pressed={active}
       onClick={() => onSet(value)}
-      className={`px-2.5 py-1 rounded-md text-[11px] uppercase tracking-wider transition-colors ${active ? 'bg-accent/25 text-white ring-1 ring-accent/60' : 'text-ink/70 hover:text-white hover:bg-panel2'}`}
+      className={`px-2.5 py-1 coarse:py-2 coarse:px-3 rounded-md text-[11px] uppercase tracking-wider transition-colors ${active ? 'bg-accent/25 text-white ring-1 ring-accent/60' : 'text-ink/70 hover:text-white hover:bg-panel2'}`}
     >
       {label}
     </button>

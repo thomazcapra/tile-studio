@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
+import type { PointerEvent as ReactPointerEvent } from 'react';
 import { Copy, Plus, Sparkles, Trash2 } from 'lucide-react';
 import clsx from 'clsx';
 import { useEditorStore } from '../store/editor';
@@ -6,6 +7,7 @@ import { TileThumbnail } from './TileThumbnail';
 import { NewTilesetDialog } from './NewTilesetDialog';
 import { GenerateTilesetDialog } from './GenerateTilesetDialog';
 import { Section } from './SidePanel';
+import { RowMenuButton } from './RowMenuButton';
 
 export function TilesetsPanel() {
   const tilesets = useEditorStore((s) => s.sprite.tilesets);
@@ -68,6 +70,29 @@ function TilesetBlock({ tilesetId }: { tilesetId: string }) {
   const [menu, setMenu] = useState<{ x: number; y: number; index: number } | null>(null);
   const [dragIdx, setDragIdx] = useState<number | null>(null);
 
+  // Long-press → context menu (touch / pen).
+  const lpRef = useRef<{ timer: number | null; pid: number | null; sx: number; sy: number }>({ timer: null, pid: null, sx: 0, sy: 0 });
+  const cancelLP = useCallback(() => {
+    if (lpRef.current.timer != null) { clearTimeout(lpRef.current.timer); lpRef.current.timer = null; }
+    lpRef.current.pid = null;
+  }, []);
+  const startLP = useCallback((e: ReactPointerEvent, index: number) => {
+    if (e.pointerType === 'mouse') return;
+    cancelLP();
+    lpRef.current.pid = e.pointerId;
+    lpRef.current.sx = e.clientX;
+    lpRef.current.sy = e.clientY;
+    const x = e.clientX, y = e.clientY;
+    lpRef.current.timer = window.setTimeout(() => {
+      lpRef.current.timer = null;
+      setMenu({ x, y, index });
+    }, 500);
+  }, [cancelLP]);
+  const moveLP = useCallback((e: ReactPointerEvent) => {
+    if (lpRef.current.timer == null || lpRef.current.pid !== e.pointerId) return;
+    if (Math.abs(e.clientX - lpRef.current.sx) > 8 || Math.abs(e.clientY - lpRef.current.sy) > 8) cancelLP();
+  }, [cancelLP]);
+
   if (!tileset) return null;
 
   function open(tileIndex: number) {
@@ -103,6 +128,10 @@ function TilesetBlock({ tilesetId }: { tilesetId: string }) {
               onClick={() => selectTile(tilesetId, i)}
               onDoubleClick={() => open(i)}
               onContextMenu={(e) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY, index: i }); }}
+              onPointerDown={(e) => startLP(e, i)}
+              onPointerMove={moveLP}
+              onPointerUp={cancelLP}
+              onPointerCancel={cancelLP}
               draggable
               onDragStart={(e) => { setDragIdx(i); e.dataTransfer.effectAllowed = 'move'; }}
               onDragOver={(e) => { if (dragIdx != null && dragIdx !== i) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; } }}
@@ -117,7 +146,7 @@ function TilesetBlock({ tilesetId }: { tilesetId: string }) {
                 active ? 'ring-accent' : 'ring-black/40 hover:ring-accent/50',
                 dragIdx === i && 'opacity-50',
               )}
-              title={`Tile #${i} — drag to reorder · double-click to edit`}
+              title={`Tile #${i} — drag to reorder · double-click to edit · long-press for menu`}
               style={{ width: thumbSize, height: thumbSize }}
             >
               <div className="absolute inset-0" style={{
@@ -128,6 +157,14 @@ function TilesetBlock({ tilesetId }: { tilesetId: string }) {
               </div>
               <span className="absolute bottom-0 right-0 text-[8px] px-0.5 text-white/80 bg-black/50 leading-none rounded-tl-sm">
                 {i}
+              </span>
+              <span className="absolute top-0 right-0">
+                <RowMenuButton
+                  testId={`tile-menu-${tilesetId}-${i}`}
+                  ariaLabel="Tile actions"
+                  className="w-5 h-5 coarse:w-7 coarse:h-7 bg-black/60"
+                  onOpen={(x, y) => setMenu({ x, y, index: i })}
+                />
               </span>
             </button>
           );

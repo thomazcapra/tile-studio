@@ -50,8 +50,9 @@ export function Minimap() {
     }
   }, [sprite, frame, dirtyTick, viewport, mmW, mmH]);
 
-  function handle(e: React.MouseEvent) {
-    if (e.buttons === 0 && e.type !== 'mousedown') return;
+  function handle(e: React.PointerEvent) {
+    // Only follow drags while the primary button (or finger/pen) is engaged.
+    if (e.type !== 'pointerdown' && (e.buttons & 1) === 0) return;
     const c = ref.current!;
     const rect = c.getBoundingClientRect();
     const relX = (e.clientX - rect.left) / rect.width;
@@ -70,10 +71,19 @@ export function Minimap() {
     <div className="absolute bottom-2 right-2 rounded-md border border-border bg-panel2/80 p-1 shadow-lg" data-testid="minimap">
       <canvas
         ref={ref}
-        className="block rounded cursor-crosshair"
+        className="block rounded cursor-crosshair touch-none"
         style={{ imageRendering: 'pixelated', width: mmW, height: mmH }}
-        onMouseDown={handle}
-        onMouseMove={handle}
+        onPointerDown={(e) => {
+          try { (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); } catch { /* ignore */ }
+          handle(e);
+        }}
+        onPointerMove={handle}
+        onPointerUp={(e) => {
+          const el = e.currentTarget as HTMLElement;
+          if (el.hasPointerCapture?.(e.pointerId)) {
+            try { el.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+          }
+        }}
       />
     </div>
   );

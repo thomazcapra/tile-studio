@@ -15,5 +15,13 @@ export default {
       },
     },
   },
-  plugins: [],
+  plugins: [
+    // Pointer-capability media variants. Use `coarse:w-11` to bump a button to 44 px on
+    // touch devices (iPad / phone), and `fine:` to target precision pointers (mouse).
+    function ({ addVariant }) {
+      addVariant('coarse', '@media (pointer: coarse)');
+      addVariant('fine', '@media (pointer: fine)');
+      addVariant('hover-none', '@media (hover: none)');
+    },
+  ],
 };
