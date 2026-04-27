@@ -24,6 +24,7 @@ If you mainly want reference material, jump straight to:
 
 - [Keyboard Shortcuts and Commands](Keyboard-Shortcuts-and-Commands.md)
 - [Data Model and Project Format](Data-Model-and-Project-Format.md)
+- [BrowserQuest Maps](BrowserQuest-Maps.md)
 
 ## What Tile Studio Covers
 

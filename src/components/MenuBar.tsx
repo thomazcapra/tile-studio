@@ -19,6 +19,9 @@ import { PaletteEditorDialog } from './PaletteEditorDialog';
 import { SpriteSizeDialog } from './SpriteSizeDialog';
 import { ImportSpriteSheetDialog } from './ImportSpriteSheetDialog';
 import { PreferencesDialog } from './PreferencesDialog';
+import { BrowserQuestImportDialog } from './BrowserQuestImportDialog';
+import { exportBQ } from '../io/browser-quest';
+import { zipFiles } from '../io/export';
 
 interface MenuItem {
   label: string;
@@ -96,6 +99,7 @@ export function MenuBar() {
   const [spriteSizeOpen, setSpriteSizeOpen] = useState(false);
   const [importSheetOpen, setImportSheetOpen] = useState(false);
   const [prefsOpen, setPrefsOpen] = useState(false);
+  const [bqImportOpen, setBqImportOpen] = useState(false);
 
   const sprite = useEditorStore((s) => s.sprite);
   const customBrush = useEditorStore((s) => s.customBrush);
@@ -223,6 +227,27 @@ export function MenuBar() {
     catch (err) { toast.error(`Failed: ${(err as Error).message}`); }
   }
 
+  async function onExportBQ() {
+    try {
+      const { client, server, warnings } = exportBQ(sprite);
+      const base = (sprite.name?.replace(/[^a-z0-9_-]/gi, '') || 'world');
+      const files = [
+        { name: `${base}_client.json`, blob: new Blob([JSON.stringify(client)], { type: 'application/json' }) },
+        { name: `${base}_server.json`, blob: new Blob([JSON.stringify(server)], { type: 'application/json' }) },
+      ];
+      const zip = await zipFiles(files, base);
+      downloadBlob(zip, `${base}.zip`);
+      for (const w of warnings.slice(0, 3)) toast(w);
+      if (warnings.length > 3) toast(`(+${warnings.length - 3} more — see console)`);
+      if (warnings.length > 0) {
+        console.warn('[browser-quest export] warnings:', warnings);
+      }
+      toast.success(`Exported ${base}_client.json + ${base}_server.json`);
+    } catch (err) {
+      toast.error(`BQ export failed: ${(err as Error).message}`);
+    }
+  }
+
   function onFlatten() {
     if (!currentLayer || currentLayer.type !== 'tilemap') {
       toast.error('Active layer is not a tilemap');
@@ -248,7 +273,9 @@ export function MenuBar() {
     { sep: true, label: '' },
     { label: 'Import PNG…', shortcut: 'Ctrl+O', onClick: onOpen, testId: 'm-file-open' },
     { label: 'Import Sprite Sheet…', onClick: () => setImportSheetOpen(true), testId: 'm-file-import-sheet' },
+    { label: 'Import BrowserQuest…', onClick: () => setBqImportOpen(true), testId: 'm-file-bq-import' },
     { label: 'Export…', shortcut: 'Ctrl+Shift+E', onClick: () => setExportOpen(true), testId: 'm-file-export' },
+    { label: 'Export to BrowserQuest', onClick: onExportBQ, testId: 'm-file-bq-export' },
     { sep: true, label: '' },
     { label: 'Discard Autosave', onClick: onDiscardAutosave, testId: 'm-file-discard-autosave' },
   ];
@@ -444,6 +471,7 @@ export function MenuBar() {
       <SpriteSizeDialog open={spriteSizeOpen} onClose={() => setSpriteSizeOpen(false)} />
       <ImportSpriteSheetDialog open={importSheetOpen} onClose={() => setImportSheetOpen(false)} />
       <PreferencesDialog open={prefsOpen} onClose={() => setPrefsOpen(false)} />
+      <BrowserQuestImportDialog open={bqImportOpen} onClose={() => setBqImportOpen(false)} />
     </div>
   );
 }

@@ -1,0 +1,15 @@
+{
+  "_comment": "Example MCP config block. Copy the `mcpServers` content into your real claude_desktop_config.json. Replace YOUR-GEMINI-KEY-HERE with a real key from https://aistudio.google.com/apikey.",
+  "mcpServers": {
+    "tile-studio": {
+      "command": "npx",
+      "args": [
+        "tsx",
+        "C:\\Users\\thoma\\Documents\\Projects\\tile-studio\\mcp-server\\src\\index.ts"
+      ],
+      "env": {
+        "GEMINI_API_KEY": "YOUR-GEMINI-KEY-HERE"
+      }
+    }
+  }
+}

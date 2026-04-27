@@ -11,11 +11,23 @@ export function compositeFrame(sprite: Sprite, frame: number, opts: { includeRef
   const includeReference = opts.includeReference ?? true;
   const tileClockMs = opts.tileClockMs ?? 0;
 
+  // Index layers and cels once. The previous version called `sprite.layers.find`
+  // and `sprite.cels.find` inside the layer loop and recursively for ancestor
+  // visibility checks; on a 7-layer sprite with hundreds of cels this turned
+  // O(L) layer iteration into O(L^2 + L*C).
+  const layerById = new Map<string, typeof sprite.layers[number]>();
+  for (const l of sprite.layers) layerById.set(l.id, l);
+  const celByLayerFrame = new Map<string, Cel>();
+  for (const c of sprite.cels) {
+    if (c.frame === frame) celByLayerFrame.set(c.layerId, c);
+  }
+  const tilesetById = new Map<string, typeof sprite.tilesets[number]>();
+  for (const t of sprite.tilesets) tilesetById.set(t.id, t);
+
   function ancestorHidden(layer: Sprite['layers'][number]): boolean {
-    const cur: typeof layer | undefined = layer;
-    let pid = cur.parentId;
+    let pid = layer.parentId;
     while (pid) {
-      const p = sprite.layers.find((x) => x.id === pid);
+      const p = layerById.get(pid);
       if (!p) break;
       if (!p.visible) return true;
       pid = p.parentId;
@@ -24,22 +36,33 @@ export function compositeFrame(sprite: Sprite, frame: number, opts: { includeRef
   }
 
   for (const layerId of sprite.layerOrder) {
-    const layer = sprite.layers.find((l) => l.id === layerId);
+    const layer = layerById.get(layerId);
     if (!layer || !layer.visible || layer.type === 'group') continue;
     if (layer.type === 'reference' && !includeReference) continue;
     if (ancestorHidden(layer)) continue;
 
-    const cel = sprite.cels.find((c) => c.layerId === layerId && c.frame === frame);
+    const cel = celByLayerFrame.get(layerId);
     if (!cel) continue;
 
     const mode = layer.blendMode ?? 'normal';
     const opacity = layer.opacity / 255;
-    blitCel(dst, sprite.w, sprite.h, cel, sprite, mode, opacity, tileClockMs);
+    blitCel(dst, sprite.w, sprite.h, cel, sprite, mode, opacity, tileClockMs, layerById, tilesetById);
   }
   return out;
 }
 
-function blitCel(dst: Uint32Array, dw: number, dh: number, cel: Cel, sprite: Sprite, mode: BlendMode, opacity: number, tileClockMs: number) {
+function blitCel(
+  dst: Uint32Array,
+  dw: number,
+  dh: number,
+  cel: Cel,
+  sprite: Sprite,
+  mode: BlendMode,
+  opacity: number,
+  tileClockMs: number,
+  layerById: Map<string, Sprite['layers'][number]>,
+  tilesetById: Map<string, Sprite['tilesets'][number]>,
+) {
   const img = cel.image;
   if (img.colorMode === 'rgba') {
     blitRGBABlended(dst, dw, dh, cel.x, cel.y, img.w, img.h, img.data, mode, opacity);
@@ -57,7 +80,7 @@ function blitCel(dst: Uint32Array, dw: number, dh: number, cel: Cel, sprite: Spr
       }
     }
   } else if (img.colorMode === 'tilemap') {
-    blitTilemap(dst, dw, dh, cel, sprite, img, tileClockMs);
+    blitTilemap(dst, dw, dh, cel, img, tileClockMs, layerById, tilesetById);
   }
 }
 
@@ -127,11 +150,20 @@ function overlayCh(d: number, s: number): number {
   return d < 128 ? (2 * s * d) / 255 : 255 - (2 * (255 - s) * (255 - d)) / 255;
 }
 
-function blitTilemap(dst: Uint32Array, dw: number, dh: number, cel: Cel, sprite: Sprite, img: AnyImage, tileClockMs: number) {
+function blitTilemap(
+  dst: Uint32Array,
+  dw: number,
+  dh: number,
+  cel: Cel,
+  img: AnyImage,
+  tileClockMs: number,
+  layerById: Map<string, Sprite['layers'][number]>,
+  tilesetById: Map<string, Sprite['tilesets'][number]>,
+) {
   if (img.colorMode !== 'tilemap') return;
-  const layer = sprite.layers.find((l) => l.id === cel.layerId);
+  const layer = layerById.get(cel.layerId);
   if (!layer || layer.type !== 'tilemap') return;
-  const tileset = sprite.tilesets.find((t) => t.id === layer.tilesetId);
+  const tileset = tilesetById.get(layer.tilesetId);
   if (!tileset) return;
   const { tw, th } = tileset.grid;
   for (let ty = 0; ty < img.h; ty++) {
@@ -184,6 +216,184 @@ function blitRGBAFlipped(dst: Uint32Array, dw: number, dh: number, ox: number, o
   }
 }
 
+// Partial recomposite: rebuild only the pixel rect `rect` directly into `ctx`,
+// leaving the rest of the canvas untouched. Use this on tile-paint strokes so
+// we don't redo a 70ms full-sprite composite for a single 16x16 tile change.
+//
+// The rect is in sprite-space pixel coordinates. Caller is responsible for
+// using the same coordinate system for `ctx` (i.e. ctx must already be the
+// offscreen canvas sized to `sprite.w × sprite.h`).
+export function compositeRect(
+  sprite: Sprite,
+  frame: number,
+  ctx: CanvasRenderingContext2D,
+  rect: { x: number; y: number; w: number; h: number },
+  opts: { includeReference?: boolean; tileClockMs?: number } = {},
+): void {
+  // Clamp rect to sprite bounds.
+  const x0 = Math.max(0, Math.min(sprite.w, rect.x));
+  const y0 = Math.max(0, Math.min(sprite.h, rect.y));
+  const x1 = Math.max(0, Math.min(sprite.w, rect.x + rect.w));
+  const y1 = Math.max(0, Math.min(sprite.h, rect.y + rect.h));
+  const rw = x1 - x0;
+  const rh = y1 - y0;
+  if (rw <= 0 || rh <= 0) return;
+
+  const out = new ImageData(rw, rh);
+  const dst = new Uint32Array(out.data.buffer);
+  const includeReference = opts.includeReference ?? true;
+  const tileClockMs = opts.tileClockMs ?? 0;
+
+  const layerById = new Map<string, typeof sprite.layers[number]>();
+  for (const l of sprite.layers) layerById.set(l.id, l);
+  const celByLayerFrame = new Map<string, Cel>();
+  for (const c of sprite.cels) {
+    if (c.frame === frame) celByLayerFrame.set(c.layerId, c);
+  }
+  const tilesetById = new Map<string, typeof sprite.tilesets[number]>();
+  for (const t of sprite.tilesets) tilesetById.set(t.id, t);
+
+  function ancestorHidden(layer: Sprite['layers'][number]): boolean {
+    let pid = layer.parentId;
+    while (pid) {
+      const p = layerById.get(pid);
+      if (!p) break;
+      if (!p.visible) return true;
+      pid = p.parentId;
+    }
+    return false;
+  }
+
+  for (const layerId of sprite.layerOrder) {
+    const layer = layerById.get(layerId);
+    if (!layer || !layer.visible || layer.type === 'group') continue;
+    if (layer.type === 'reference' && !includeReference) continue;
+    if (ancestorHidden(layer)) continue;
+    const cel = celByLayerFrame.get(layerId);
+    if (!cel) continue;
+    const mode = layer.blendMode ?? 'normal';
+    const opacity = layer.opacity / 255;
+    blitCelClipped(dst, rw, rh, x0, y0, cel, sprite, mode, opacity, tileClockMs, layerById, tilesetById);
+    void sprite; // (kept for future indexed/blend paths)
+  }
+  ctx.putImageData(out, x0, y0);
+}
+
+// Like blitCel, but writes to a buffer that represents the sprite-space
+// rectangle [(clipX, clipY), (clipX+dw, clipY+dh)). Skips contributions outside
+// the rect cheaply — for tilemaps, iterate only the cells whose pixel bounds
+// intersect the clip rect.
+function blitCelClipped(
+  dst: Uint32Array,
+  dw: number,
+  dh: number,
+  clipX: number,
+  clipY: number,
+  cel: Cel,
+  _sprite: Sprite,
+  mode: BlendMode,
+  opacity: number,
+  tileClockMs: number,
+  layerById: Map<string, Sprite['layers'][number]>,
+  tilesetById: Map<string, Sprite['tilesets'][number]>,
+) {
+  const img = cel.image;
+  if (img.colorMode === 'rgba') {
+    blitRGBAClipped(dst, dw, dh, clipX, clipY, cel.x, cel.y, img.w, img.h, img.data, mode, opacity);
+  } else if (img.colorMode === 'tilemap') {
+    blitTilemapClipped(dst, dw, dh, clipX, clipY, cel, img, tileClockMs, layerById, tilesetById);
+  }
+  // indexed/reference paths are uncommon for the partial-update use case;
+  // fall back to a no-op rather than mishandle them. Callers can do a full
+  // recomposite when those layers change.
+}
+
+function blitRGBAClipped(
+  dst: Uint32Array,
+  dw: number,
+  dh: number,
+  clipX: number,
+  clipY: number,
+  ox: number,
+  oy: number,
+  sw: number,
+  sh: number,
+  src: Uint32Array,
+  mode: BlendMode,
+  opacity: number,
+) {
+  const fastCopy = mode === 'normal' && opacity === 1;
+  // Compute intersection of [ox..ox+sw) × [oy..oy+sh) with [clipX..clipX+dw) × [clipY..clipY+dh).
+  const xs = Math.max(ox, clipX);
+  const ys = Math.max(oy, clipY);
+  const xe = Math.min(ox + sw, clipX + dw);
+  const ye = Math.min(oy + sh, clipY + dh);
+  if (xe <= xs || ye <= ys) return;
+  for (let yy = ys; yy < ye; yy++) {
+    const srcRow = (yy - oy) * sw;
+    const dstRow = (yy - clipY) * dw;
+    for (let xx = xs; xx < xe; xx++) {
+      const c = src[srcRow + (xx - ox)];
+      if ((c >>> 24) === 0) continue;
+      const di = dstRow + (xx - clipX);
+      dst[di] = fastCopy ? c : blendPixel(dst[di], c, mode, opacity);
+    }
+  }
+}
+
+function blitTilemapClipped(
+  dst: Uint32Array,
+  dw: number,
+  dh: number,
+  clipX: number,
+  clipY: number,
+  cel: Cel,
+  img: AnyImage,
+  tileClockMs: number,
+  layerById: Map<string, Sprite['layers'][number]>,
+  tilesetById: Map<string, Sprite['tilesets'][number]>,
+) {
+  if (img.colorMode !== 'tilemap') return;
+  const layer = layerById.get(cel.layerId);
+  if (!layer || layer.type !== 'tilemap') return;
+  const tileset = tilesetById.get(layer.tilesetId);
+  if (!tileset) return;
+  const { tw, th } = tileset.grid;
+  // Convert clip rect to tile-space range, clamped to map bounds.
+  const txStart = Math.max(0, Math.floor((clipX - cel.x) / tw));
+  const tyStart = Math.max(0, Math.floor((clipY - cel.y) / th));
+  const txEnd = Math.min(img.w, Math.ceil((clipX + dw - cel.x) / tw));
+  const tyEnd = Math.min(img.h, Math.ceil((clipY + dh - cel.y) / th));
+  for (let ty = tyStart; ty < tyEnd; ty++) {
+    for (let tx = txStart; tx < txEnd; tx++) {
+      const word = img.data[ty * img.w + tx];
+      if (word === 0) continue;
+      const idx = readTilesetIndex(word);
+      const tile = idx >= 0 ? tileset.tiles[idx] : undefined;
+      if (!tile) continue;
+      const flags = tileFlags(word);
+      const baseX = cel.x + tx * tw;
+      const baseY = cel.y + ty * th;
+      let timg: AnyImage = tile.image;
+      if (tile.animation && tile.animation.frames.length > 0) {
+        const { frames, frameMs } = tile.animation;
+        const fi = Math.floor(tileClockMs / frameMs) % frames.length;
+        timg = frames[fi] ?? tile.image;
+      }
+      if (timg.colorMode === 'rgba') {
+        if (flags === 0) {
+          blitRGBAClipped(dst, dw, dh, clipX, clipY, baseX, baseY, timg.w, timg.h, timg.data, 'normal', 1);
+        } else {
+          // Flipped tiles fall back to the existing path; expand the clip
+          // window manually and call the unflipped clipped blitter on the
+          // intermediate transformed pixels. Rare on BQ-style content.
+          blitRGBAFlipped(dst, dw, dh, baseX - clipX, baseY - clipY, timg.w, timg.h, timg.data, flags);
+        }
+      }
+    }
+  }
+}
+
 // Render a single ImageRGBA (used by tile-edit mode) directly as ImageData.
 export function imageRGBAToImageData(img: { w: number; h: number; data: Uint32Array }): ImageData {
   const out = new ImageData(img.w, img.h);
@@ -191,17 +401,40 @@ export function imageRGBAToImageData(img: { w: number; h: number; data: Uint32Ar
   return out;
 }
 
+// Reused checkerboard pattern, keyed by cell size. A pattern fill replaces
+// O(area / cell^2) fillRect calls with a single fillRect — turning the 100k+
+// fillRect loop on a 2752x5024 sprite into one paint command.
+const checkerPatternCache = new Map<number, CanvasPattern>();
+function checkerPattern(ctx: CanvasRenderingContext2D, cell: number): CanvasPattern | null {
+  const cached = checkerPatternCache.get(cell);
+  if (cached) return cached;
+  const tile = document.createElement('canvas');
+  tile.width = cell * 2;
+  tile.height = cell * 2;
+  const tctx = tile.getContext('2d');
+  if (!tctx) return null;
+  tctx.fillStyle = '#2a2a2a';
+  tctx.fillRect(0, 0, cell * 2, cell * 2);
+  tctx.fillStyle = '#333333';
+  tctx.fillRect(0, 0, cell, cell);
+  tctx.fillRect(cell, cell, cell, cell);
+  const pat = ctx.createPattern(tile, 'repeat');
+  if (pat) checkerPatternCache.set(cell, pat);
+  return pat;
+}
+
 export function drawCheckerboard(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, cell = 8) {
+  const pat = checkerPattern(ctx, cell);
   ctx.save();
-  ctx.fillStyle = '#2a2a2a';
-  ctx.fillRect(x, y, w, h);
-  ctx.fillStyle = '#333333';
-  for (let j = 0; j < h; j += cell) {
-    for (let i = 0; i < w; i += cell) {
-      if (((i / cell) + (j / cell)) % 2 === 0) {
-        ctx.fillRect(x + i, y + j, Math.min(cell, w - i), Math.min(cell, h - j));
-      }
-    }
+  if (pat) {
+    // Translate the pattern origin so the checker is anchored to (x, y) — without
+    // this, panning would slide the pattern relative to the sprite.
+    ctx.translate(x, y);
+    ctx.fillStyle = pat;
+    ctx.fillRect(0, 0, w, h);
+  } else {
+    ctx.fillStyle = '#2a2a2a';
+    ctx.fillRect(x, y, w, h);
   }
   ctx.restore();
 }

@@ -22,6 +22,7 @@ Feature documentation now lives in [`docs/wiki`](docs/wiki/Home.md).
 - [Export, Persistence, and Preferences](docs/wiki/Export-Persistence-and-Preferences.md)
 - [Keyboard Shortcuts and Commands](docs/wiki/Keyboard-Shortcuts-and-Commands.md)
 - [Data Model and Project Format](docs/wiki/Data-Model-and-Project-Format.md)
+- [BrowserQuest Maps](docs/wiki/BrowserQuest-Maps.md)
 
 ---
 
@@ -67,6 +68,7 @@ Tile Studio is an opinionated open-source take on that niche. It's deliberately 
 - Frame sequence as a ZIP of numbered PNGs
 - Sprite-sheet atlas with JSON metadata in Phaser/PixiJS "hash" layout or TexturePacker "array" layout
 - Tilemap exports: Tiled (TMJ + TSJ), Aseprite JSON Array, raw JSON
+- BrowserQuest map pair (`world_client.json` + `world_server.json`) — see [docs/wiki/BrowserQuest-Maps.md](docs/wiki/BrowserQuest-Maps.md)
 - Animated GIF (quantized per-frame)
 - Tileset atlas PNG on its own
 
